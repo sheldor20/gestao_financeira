@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   classifyFixedExpenses,
   debtPaidCents,
+  documentTransactionCount,
   goalSavedCents,
   monthlyIncomeByPerson,
   monthlySummary,
@@ -121,6 +122,19 @@ test("pagamentos vinculados reduzem dívidas e acumulam metas", () => {
   };
   assert.equal(debtPaidCents("debt-1", [debtPayment]), 30_000);
   assert.equal(goalSavedCents("goal-1", [goalTransfer]), 50_000);
+});
+
+test("conta somente os lançamentos vinculados ao documento excluído", () => {
+  const fromDocument = [
+    { ...transactions[0], id: "doc-1", sourceDocumentId: "document-1" },
+    { ...transactions[1], id: "doc-2", sourceDocumentId: "document-1" },
+    { ...transactions[2], id: "doc-3", sourceDocumentId: "document-2" },
+    transactions[3],
+  ];
+
+  assert.equal(documentTransactionCount("document-1", fromDocument), 2);
+  assert.equal(documentTransactionCount("document-2", fromDocument), 1);
+  assert.equal(documentTransactionCount("missing", fromDocument), 0);
 });
 
 test("normaliza o tipo de arquivo antes de enviar ao bucket privado", () => {

@@ -177,6 +177,15 @@ export function matchesScope(owner: Owner, scope: Scope) {
   return scope === "all" || owner === scope;
 }
 
+export function documentTransactionCount(
+  documentId: string,
+  transactions: Transaction[],
+) {
+  return transactions.filter(
+    (transaction) => transaction.sourceDocumentId === documentId,
+  ).length;
+}
+
 export function transactionsForPeriod(
   transactions: Transaction[],
   month: string,
