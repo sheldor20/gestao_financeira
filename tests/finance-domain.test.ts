@@ -9,6 +9,7 @@ import {
   proportionalSplit,
   type Transaction,
 } from "../lib/finance-domain.ts";
+import { normalizeFinancialDocumentContentType } from "../lib/document-upload.ts";
 
 function movement(
   id: string,
@@ -118,4 +119,22 @@ test("pagamentos vinculados reduzem dívidas e acumulam metas", () => {
   };
   assert.equal(debtPaidCents("debt-1", [debtPayment]), 30_000);
   assert.equal(goalSavedCents("goal-1", [goalTransfer]), 50_000);
+});
+
+test("normaliza o tipo de arquivo antes de enviar ao bucket privado", () => {
+  assert.equal(
+    normalizeFinancialDocumentContentType({
+      name: "fatura.csv",
+      type: "application/vnd.ms-excel",
+    }),
+    "text/csv",
+  );
+  assert.equal(
+    normalizeFinancialDocumentContentType({ name: "extrato.pdf", type: "" }),
+    "application/pdf",
+  );
+  assert.equal(
+    normalizeFinancialDocumentContentType({ name: "foto.png", type: "image/png" }),
+    null,
+  );
 });
