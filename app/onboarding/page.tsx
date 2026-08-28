@@ -1,9 +1,9 @@
 import { redirect } from "next/navigation";
-import { FinanceApp } from "./finance-app";
-import { isSupabaseConfigured } from "@/lib/supabase/env";
+import { OnboardingForm } from "./onboarding-form";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { isSupabaseConfigured } from "@/lib/supabase/env";
 
-export default async function Home() {
+export default async function OnboardingPage() {
   if (!isSupabaseConfigured()) redirect("/login");
 
   const supabase = await createSupabaseServerClient();
@@ -18,7 +18,7 @@ export default async function Home() {
     .eq("user_id", user.id)
     .eq("status", "active")
     .maybeSingle();
-  if (!membership) redirect("/onboarding");
+  if (membership) redirect("/");
 
-  return <FinanceApp userEmail={user.email ?? ""} />;
+  return <OnboardingForm />;
 }

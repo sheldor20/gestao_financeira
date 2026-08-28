@@ -1,33 +1,43 @@
-# Plano de arquitetura — GitHub, Vercel e Supabase
+# Arquitetura e segurança
 
-## Objetivo da primeira PR
+## Componentes
 
-Subir a base funcional atual para `git@github.com:sheldor20/gestao_financeira.git`, com Next.js, documentação, testes de regras financeiras e sem segredos.
+- Next.js e TypeScript no GitHub.
+- Vercel para produção e previews.
+- Supabase Auth, Postgres, Row Level Security e Storage privado.
+- OpenAI Responses API, chamada apenas no servidor, para ler documentos.
 
-## Etapa Supabase
+## Modelo de autorização
 
-O projeto Supabase é criado vazio nesta PR. A migração inicial entrega:
+O `auth.uid()` precisa ter uma associação ativa em `household_members`. Todas as
+políticas de dados e arquivos verificam essa associação e o mesmo
+`household_id`. O cadastro inicial e o convite são funções `security definer`
+com `search_path` explícito, validação do usuário autenticado e limitação de duas
+pessoas.
 
-1. Supabase Auth com dois usuários convidados para a mesma família.
-2. Postgres com as tabelas `households`, `household_members`, `profiles`, `accounts`, `credit_cards`, `categories`, `transactions`, `transaction_splits`, `debts`, `budgets`, `goals`, `recurrences`, `invoices` e `invoice_items`.
-3. Row Level Security em todas as tabelas, usando a associação ativa em `household_members`.
-4. Estrutura para registrar o caminho dos arquivos de fatura, sem criar bucket ou inserir arquivos nesta etapa.
-5. Índices e restrições para parcelas, recorrências e deduplicação de faturas.
-6. Trilhas de auditoria com `created_by`, `updated_by`, `created_at` e `updated_at`.
+## Pipeline documental
 
-A interface, a autenticação e o Storage serão conectados em PRs posteriores. Não há seed: os dados de demonstração permanecem apenas no estado local da interface.
+1. O servidor autentica o usuário e valida tipo/tamanho do arquivo.
+2. Calcula SHA-256 para impedir reimportação do mesmo conteúdo.
+3. Salva o original no bucket privado `financial-documents`.
+4. Envia o arquivo à OpenAI como entrada privada do processamento atual.
+5. Valida a resposta contra um esquema estruturado.
+6. Insere movimentações e atualiza saldos no Postgres.
+7. Recalcula a recorrência no banco, exigindo três meses consecutivos.
 
-## Etapa Vercel
+Sem `OPENAI_API_KEY`, somente faturas de cartão podem usar a leitura
+determinística existente; os outros documentos falham com uma mensagem clara
+para evitar interpretar créditos e débitos de forma errada.
 
-- Importar o repositório do GitHub.
-- Configurar `NEXT_PUBLIC_SUPABASE_URL` e `NEXT_PUBLIC_SUPABASE_ANON_KEY`.
-- Configurar previews por PR.
-- Proteger produção até a autenticação do casal estar concluída.
+## Segredos e ambientes
 
-## Critérios de segurança
+- `NEXT_PUBLIC_SUPABASE_URL` e a chave publicável podem existir no navegador.
+- `OPENAI_API_KEY` é segredo exclusivo do servidor/Vercel.
+- Nunca usar `service_role` na interface ou versionar `.env.local`.
+- Produção deve cadastrar o domínio público nos redirects do Supabase Auth.
 
-- Nenhuma `service_role` no navegador.
-- Uploads em bucket privado com URLs assinadas.
-- RLS testada para impedir acesso entre famílias.
-- Valores financeiros armazenados em centavos inteiros.
-- Datas mensais persistidas no formato `YYYY-MM` e eventos em `date`/`timestamptz` conforme o caso.
+## Dados
+
+Valores monetários são inteiros em centavos. Datas financeiras usam `date` e
+períodos usam o primeiro dia do mês. Não há seed nem dados de demonstração nas
+migrações.

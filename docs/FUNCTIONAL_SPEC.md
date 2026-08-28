@@ -1,61 +1,58 @@
 # Especificação funcional
 
-## 1. Estrutura do casal
+## 1. Acesso do casal
 
-Todo registro financeiro pertence a Kim, Alexandre ou ao casal. O filtro global possui quatro visões: consolidado, Kim, Alexandre e compartilhado. O mês selecionado também é global.
+- Login individual com e-mail e senha.
+- Primeiro acesso com criação do espaço ou entrada por convite.
+- No máximo duas pessoas ativas por espaço: Kim e Alexandre.
+- Todos os registros podem ser individuais ou do grupo.
 
 ## 2. Visão geral
 
-- Entradas, saídas e resultado do mês.
-- Patrimônio financeiro e capital segurado em totais separados.
-- Gastos agrupados por categoria.
-- Divisão do aluguel conforme a regra do casal.
-- Próximas parcelas e próximas cobranças recorrentes.
+- Entradas, saídas e resultado do grupo no mês.
+- Filtro consolidado, Kim, Alexandre ou grupo.
+- Renda de cada pessoa calculada pelas entradas importadas.
+- Maiores categorias, patrimônio e documentos recentes.
+- Despesas fixas somente após três meses consecutivos.
 
-## 3. Movimentações
+## 3. Entradas e saídas
 
-- Entrada, saída ou transferência.
-- Responsável, data, valor, categoria, status e observação.
-- Origem manual, recorrência ou fatura.
-- Alteração de status e exclusão.
-- Busca e filtros globais.
+- Tabela única com pessoa, data, descrição, origem, categoria e valor.
+- Origem documental: extrato bancário ou fatura de cartão.
+- Busca e filtros por mês e pessoa.
+- Vinculação de uma saída ao pagamento de uma dívida.
+- Vinculação de uma transferência ao aporte de uma meta.
 
-## 4. Planejamento
+## 4. Dívidas
 
-- Orçamentos mensais por categoria e responsável.
-- Comparação entre limite e valor efetivamente gasto.
-- Metas financeiras individuais ou compartilhadas.
-- Aportes e progresso da meta.
-- Receitas e despesas recorrentes mensais ou anuais.
-- Ativação, pausa e exclusão de recorrências.
+- Valor total, vencimento, parcelas e responsável.
+- Saldo restante calculado pelos pagamentos importados vinculados.
+- Não gera uma saída artificial: a baixa vem do extrato ou da fatura.
 
-## 5. Dívidas
+## 5. Patrimônio
 
-- Valor total e valor da parcela.
-- Parcela atual, número total de parcelas e saldo estimado.
-- Próximo vencimento.
-- Status pendente, pago ou atrasado.
-
-## 6. Patrimônio
-
-- Conta corrente, reserva/poupança e dinheiro.
+- Conta corrente, reserva, dinheiro e outros bens.
 - Investimentos e previdência.
-- Seguros, exibidos como capital segurado.
-- Outros bens.
-- Inclusão opcional no cálculo do patrimônio líquido.
+- Seguros exibidos separadamente como capital segurado.
+- Valor, instituição, responsável e data do saldo extraídos do documento.
 
-## 7. Cartões e faturas
+## 6. Planejamento
 
-- Cadastro de cartão, instituição, limite, fechamento e vencimento.
-- Importação de PDF, CSV ou TXT.
-- Identificação de data, descrição, valor e parcela.
-- Sugestão de categoria por regras.
-- Revisão manual da categoria.
-- Na etapa Supabase, arquivo original no Storage e proteção contra duplicidade.
+- Meta individual ou do grupo.
+- Valor total, valor mensal, data alvo e conta de destino.
+- Progresso calculado pelos aportes importados e vinculados.
 
-## 8. Configurações
+## 7. Importação inteligente
 
-- Renda mensal de cada pessoa.
-- Divisão proporcional à renda, 50/50 ou personalizada.
-- Categorias personalizadas.
-- Estado das integrações GitHub, Vercel e Supabase.
+- PDF, CSV ou TXT de até 15 MB.
+- Extratos bancários, faturas, investimentos, previdência e seguros.
+- Extração de instituição, período, movimentações, categorias e saldos.
+- Deduplicação por conteúdo do arquivo e por lançamento do documento.
+- Documento original privado, estado de processamento e evidência da extração.
+- Falhas ficam registradas sem aplicar dados parciais silenciosamente.
+
+## 8. Regra de recorrência
+
+Uma despesa é agrupada por pessoa e estabelecimento normalizado. Ela permanece
+não fixa no primeiro e no segundo mês. Ao existir no terceiro mês consecutivo,
+o grupo passa a ser classificado como fixo. Uma interrupção reinicia a contagem.

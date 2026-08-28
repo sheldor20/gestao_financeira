@@ -4,10 +4,11 @@ export type Scope = Owner | "all";
 export type TransactionKind = "income" | "expense" | "transfer";
 export type PaymentStatus = "paid" | "pending" | "scheduled";
 
-export type Person = {
+export type Member = {
+  memberId: string;
   id: PersonId;
   name: string;
-  monthlyIncomeCents: number;
+  role: "owner" | "member";
   color: string;
 };
 
@@ -26,6 +27,8 @@ export type Account = {
     | "other";
   balanceCents: number;
   includeInNetWorth: boolean;
+  balanceDate: string | null;
+  sourceDocumentId: string | null;
 };
 
 export type CreditCard = {
@@ -38,6 +41,15 @@ export type CreditCard = {
   limitCents: number;
 };
 
+export type TransactionSource =
+  | "manual"
+  | "email"
+  | "invoice"
+  | "recurrence"
+  | "bank_statement"
+  | "card_invoice"
+  | "document_ai";
+
 export type Transaction = {
   id: string;
   owner: Owner;
@@ -47,12 +59,19 @@ export type Transaction = {
   amountCents: number;
   transactionDate: string;
   status: PaymentStatus;
-  source: "manual" | "email" | "invoice" | "recurrence";
-  accountId?: string | null;
-  cardId?: string | null;
-  installmentCurrent?: number | null;
-  installmentTotal?: number | null;
-  note?: string;
+  source: TransactionSource;
+  accountId: string | null;
+  cardId: string | null;
+  installmentCurrent: number | null;
+  installmentTotal: number | null;
+  note: string | null;
+  merchantKey: string;
+  isFixedRecurring: boolean;
+  recurrenceStreak: number;
+  aiConfidence: number | null;
+  sourceDocumentId: string | null;
+  debtId: string | null;
+  goalId: string | null;
 };
 
 export type Debt = {
@@ -68,67 +87,60 @@ export type Debt = {
   category: string;
 };
 
-export type Budget = {
-  id: string;
-  owner: Owner;
-  category: string;
-  month: string;
-  limitCents: number;
-};
-
 export type Goal = {
   id: string;
   owner: Owner;
   name: string;
   targetCents: number;
   currentCents: number;
-  targetDate: string;
+  monthlyTargetCents: number;
+  targetDate: string | null;
+  targetAccountId: string | null;
   status: "active" | "completed" | "paused";
 };
 
-export type Recurrence = {
+export type FinancialDocument = {
   id: string;
   owner: Owner;
-  description: string;
-  category: string;
-  amountCents: number;
-  kind: "income" | "expense";
-  frequency: "monthly" | "annual";
-  nextDate: string;
-  active: boolean;
-};
-
-export type Invoice = {
-  id: string;
-  cardId: string | null;
-  owner: Owner;
+  documentType:
+    | "bank_statement"
+    | "credit_card_invoice"
+    | "investment_statement"
+    | "insurance_statement"
+    | "pension_statement"
+    | "other";
   filename: string;
-  period: string;
-  totalCents: number;
+  institution: string | null;
+  periodStart: string | null;
+  periodEnd: string | null;
+  status: "uploaded" | "processing" | "review" | "applied" | "failed";
+  extractionMode: "ai" | "deterministic" | null;
   itemCount: number;
-  status: "review" | "reviewed";
   createdAt: string;
 };
 
-export type SplitSettings = {
-  method: "proportional" | "equal" | "custom";
-  kimPercent: number;
-  alexandrePercent: number;
-};
-
 export type FinanceState = {
+  householdId: string;
   householdName: string;
-  people: Person[];
-  categories: string[];
+  people: Member[];
   transactions: Transaction[];
   accounts: Account[];
   cards: CreditCard[];
   debts: Debt[];
-  budgets: Budget[];
   goals: Goal[];
-  recurrences: Recurrence[];
-  invoices: Invoice[];
-  split: SplitSettings;
+  documents: FinancialDocument[];
+};
+
+export const emptyFinanceState: FinanceState = {
+  householdId: "",
+  householdName: "Kim & Alexandre",
+  people: [],
+  transactions: [],
+  accounts: [],
+  cards: [],
+  debts: [],
+  goals: [],
+  documents: [],
 };
 
 export function matchesScope(owner: Owner, scope: Scope) {
@@ -167,6 +179,30 @@ export function monthlySummary(
   };
 }
 
+export function monthlyIncomeByPerson(
+  transactions: Transaction[],
+  month: string,
+) {
+  return {
+    kimCents: transactions
+      .filter(
+        (item) =>
+          item.kind === "income" &&
+          item.owner === "kim" &&
+          item.transactionDate.startsWith(month),
+      )
+      .reduce((sum, item) => sum + item.amountCents, 0),
+    alexandreCents: transactions
+      .filter(
+        (item) =>
+          item.kind === "income" &&
+          item.owner === "alexandre" &&
+          item.transactionDate.startsWith(month),
+      )
+      .reduce((sum, item) => sum + item.amountCents, 0),
+  };
+}
+
 export function expenseByCategory(transactions: Transaction[]) {
   return Object.entries(
     transactions
@@ -178,22 +214,24 @@ export function expenseByCategory(transactions: Transaction[]) {
   ).sort((a, b) => b[1] - a[1]);
 }
 
-export function proportionalSplit(totalCents: number, people: Person[]) {
-  const incomeTotal = people.reduce(
-    (sum, person) => sum + person.monthlyIncomeCents,
-    0,
-  );
-  if (!incomeTotal)
+export function proportionalSplit(
+  totalCents: number,
+  incomes: { kimCents: number; alexandreCents: number },
+) {
+  const incomeTotal = incomes.kimCents + incomes.alexandreCents;
+  if (!incomeTotal) {
+    const kimCents = Math.round(totalCents / 2);
     return {
-      kimCents: Math.round(totalCents / 2),
-      alexandreCents: totalCents - Math.round(totalCents / 2),
+      kimCents,
+      alexandreCents: totalCents - kimCents,
       kimPercent: 50,
       alexandrePercent: 50,
     };
-  const kimIncome =
-    people.find((person) => person.id === "kim")?.monthlyIncomeCents ?? 0;
-  const kimCents = Math.round((totalCents * kimIncome) / incomeTotal);
-  const kimPercent = (kimIncome / incomeTotal) * 100;
+  }
+  const kimCents = Math.round(
+    (totalCents * incomes.kimCents) / incomeTotal,
+  );
+  const kimPercent = (incomes.kimCents / incomeTotal) * 100;
   return {
     kimCents,
     alexandreCents: totalCents - kimCents,
@@ -202,21 +240,76 @@ export function proportionalSplit(totalCents: number, people: Person[]) {
   };
 }
 
-export function customSplit(
-  totalCents: number,
-  settings: SplitSettings,
-  people: Person[],
-) {
-  if (settings.method === "proportional")
-    return proportionalSplit(totalCents, people);
-  const kimPercent = settings.method === "equal" ? 50 : settings.kimPercent;
-  const kimCents = Math.round((totalCents * kimPercent) / 100);
-  return {
-    kimCents,
-    alexandreCents: totalCents - kimCents,
-    kimPercent,
-    alexandrePercent: 100 - kimPercent,
-  };
+export function normalizeMerchant(description: string) {
+  return description
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/\b(parc(?:ela)?|compra|pagamento|debito|credito)\b/g, " ")
+    .replace(/\b\d{1,2}[/-]\d{1,2}\b/g, " ")
+    .replace(/\b\d+\b/g, " ")
+    .replace(/[^a-z\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 80);
+}
+
+function monthNumber(month: string) {
+  const [year, value] = month.split("-").map(Number);
+  return year * 12 + value;
+}
+
+export function classifyFixedExpenses(transactions: Transaction[]) {
+  const result = new Map<
+    string,
+    { isFixedRecurring: boolean; recurrenceStreak: number }
+  >();
+  const groups = new Map<string, Map<string, Transaction[]>>();
+
+  for (const transaction of transactions) {
+    if (transaction.kind !== "expense") continue;
+    const merchant =
+      transaction.merchantKey || normalizeMerchant(transaction.description);
+    if (!merchant) continue;
+    const key = `${transaction.owner}:${merchant}`;
+    const byMonth = groups.get(key) ?? new Map<string, Transaction[]>();
+    const month = transaction.transactionDate.slice(0, 7);
+    byMonth.set(month, [...(byMonth.get(month) ?? []), transaction]);
+    groups.set(key, byMonth);
+  }
+
+  for (const byMonth of groups.values()) {
+    const months = [...byMonth.keys()].sort(
+      (a, b) => monthNumber(a) - monthNumber(b),
+    );
+    let segment: string[] = [];
+
+    const applySegment = () => {
+      const isFixedRecurring = segment.length >= 3;
+      segment.forEach((month, index) => {
+        for (const transaction of byMonth.get(month) ?? []) {
+          result.set(transaction.id, {
+            isFixedRecurring,
+            recurrenceStreak: index + 1,
+          });
+        }
+      });
+    };
+
+    for (const month of months) {
+      if (
+        segment.length &&
+        monthNumber(month) !== monthNumber(segment.at(-1) ?? month) + 1
+      ) {
+        applySegment();
+        segment = [];
+      }
+      segment.push(month);
+    }
+    applySegment();
+  }
+
+  return result;
 }
 
 export function accountTotals(accounts: Account[], scope: Scope) {
@@ -234,14 +327,19 @@ export function accountTotals(accounts: Account[], scope: Scope) {
   return { netWorthCents, insuredCents };
 }
 
-export function installmentRemaining(debt: Debt) {
-  if (debt.status === "paid") return 0;
-  return (
-    Math.max(0, debt.installmentTotal - debt.installmentCurrent + 1) *
-    debt.installmentCents
-  );
+export function debtPaidCents(debtId: string, transactions: Transaction[]) {
+  return transactions
+    .filter(
+      (item) =>
+        item.debtId === debtId &&
+        item.kind === "expense" &&
+        item.status === "paid",
+    )
+    .reduce((sum, item) => sum + item.amountCents, 0);
 }
 
-export function nextId(prefix: string) {
-  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+export function goalSavedCents(goalId: string, transactions: Transaction[]) {
+  return transactions
+    .filter((item) => item.goalId === goalId && item.status === "paid")
+    .reduce((sum, item) => sum + item.amountCents, 0);
 }
