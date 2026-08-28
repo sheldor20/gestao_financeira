@@ -7,7 +7,10 @@ import {
   goalSavedCents,
   monthlyIncomeByPerson,
   monthlySummary,
+  openInstallmentsTotalCents,
   proportionalSplit,
+  transactionsWithDebtInstallments,
+  type Debt,
   type Transaction,
 } from "../lib/finance-domain.ts";
 import { normalizeFinancialDocumentContentType } from "../lib/document-upload.ts";
@@ -61,6 +64,53 @@ const transactions = [
   movement("e2", "joint", "expense", 80_000, "2026-08-12", "Energia"),
 ];
 
+const financingDebt: Debt = {
+  id: "financing-1",
+  owner: "kim",
+  description: "Financiamento do apartamento",
+  totalCents: 23_600_000,
+  installmentCents: 258_419,
+  installmentCurrent: 64,
+  installmentTotal: 110,
+  dueDate: "2026-09-30",
+  status: "pending",
+  category: "Dívidas",
+  debtType: "financing",
+  institution: "Itaú",
+  outstandingCents: 0,
+  interestRateAnnual: null,
+  lastStatementDate: "2026-08-27",
+  lastAmortizationCents: 0,
+  sourceDocumentId: "document-financing",
+  installments: [
+    {
+      id: "installment-64",
+      installmentNumber: 64,
+      dueDate: "2026-09-30",
+      amountCents: 258_419,
+      principalCents: 74_549,
+      interestCents: null,
+      feesCents: null,
+      remainingBalanceCents: null,
+      status: "pending",
+      sourceDocumentId: "document-financing",
+    },
+    {
+      id: "installment-65",
+      installmentNumber: 65,
+      dueDate: "2026-10-30",
+      amountCents: 257_834,
+      principalCents: 74_549,
+      interestCents: null,
+      feesCents: null,
+      remainingBalanceCents: null,
+      status: "pending",
+      sourceDocumentId: "document-financing",
+    },
+  ],
+  snapshots: [],
+};
+
 test("calcula a renda mensal somente pelas entradas importadas", () => {
   assert.deepEqual(monthlyIncomeByPerson(transactions, "2026-08"), {
     kimCents: 4_000_000,
@@ -89,6 +139,47 @@ test("consolida entradas e saídas por pessoa e mês", () => {
   assert.equal(all.expenseCents, 580_000);
   assert.equal(kim.incomeCents, 4_000_000);
   assert.equal(kim.expenseCents, 500_000);
+});
+
+test("soma as parcelas abertas como total devido do financiamento", () => {
+  assert.equal(openInstallmentsTotalCents(financingDebt), 516_253);
+});
+
+test("leva cada parcela aberta para as saídas do mês de vencimento", () => {
+  const withInstallments = transactionsWithDebtInstallments([], [financingDebt]);
+
+  assert.equal(
+    monthlySummary(withInstallments, "2026-09", "all").expenseCents,
+    258_419,
+  );
+  assert.equal(
+    monthlySummary(withInstallments, "2026-10", "all").expenseCents,
+    257_834,
+  );
+  assert.equal(withInstallments[0]?.source, "debt_installment");
+  assert.equal(withInstallments[0]?.status, "scheduled");
+});
+
+test("substitui a parcela prevista por um pagamento real vinculado", () => {
+  const payment = {
+    ...movement("paid-64", "kim", "expense", 258_419, "2026-09-30"),
+    debtId: financingDebt.id,
+  };
+  const withInstallments = transactionsWithDebtInstallments(
+    [payment],
+    [financingDebt],
+  );
+
+  assert.equal(
+    monthlySummary(withInstallments, "2026-09", "all").expenseCents,
+    258_419,
+  );
+  assert.equal(
+    withInstallments.filter((item) =>
+      item.transactionDate.startsWith("2026-09"),
+    ).length,
+    1,
+  );
 });
 
 test("só classifica uma saída como fixa após três meses consecutivos", () => {
