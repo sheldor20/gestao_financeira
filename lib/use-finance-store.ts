@@ -10,6 +10,7 @@ import {
   type FinanceState,
   type FinancialDocument,
   type Goal,
+  type InvoiceItem,
   type Member,
   type Owner,
   type PersonId,
@@ -43,6 +44,49 @@ function ownerColumns(owner: Owner, members: Member[]) {
 
 function firstError(results: Array<{ error: { message: string } | null }>) {
   return results.find((result) => result.error)?.error ?? null;
+}
+
+function invoiceItemsFromRow(row: Row): InvoiceItem[] {
+  const raw = row.raw_extraction;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return [];
+  const invoice = (raw as Row).invoice;
+  if (!invoice || typeof invoice !== "object" || Array.isArray(invoice)) {
+    return [];
+  }
+  const items = (invoice as Row).items;
+  if (!Array.isArray(items)) return [];
+
+  return items.flatMap((value) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return [];
+    const item = value as Row;
+    const kind = item.kind;
+    const date = String(item.date ?? "");
+    const amountCents = number(item.amountCents);
+    if (
+      !["income", "expense", "transfer"].includes(String(kind)) ||
+      !/^\d{4}-\d{2}-\d{2}$/.test(date) ||
+      amountCents <= 0
+    ) {
+      return [];
+    }
+    return [
+      {
+        date,
+        description: String(item.description ?? "Compra no cartão"),
+        amountCents,
+        kind: kind as InvoiceItem["kind"],
+        category: String(item.category ?? "Outros"),
+        merchant: String(item.merchant ?? item.description ?? ""),
+        installmentCurrent:
+          item.installmentCurrent == null
+            ? null
+            : number(item.installmentCurrent),
+        installmentTotal:
+          item.installmentTotal == null ? null : number(item.installmentTotal),
+        confidence: number(item.confidence),
+      },
+    ];
+  });
 }
 
 export function useFinanceStore() {
@@ -202,6 +246,7 @@ export function useFinanceStore() {
         : null,
       debtId: row.debt_id ? String(row.debt_id) : null,
       goalId: row.goal_id ? String(row.goal_id) : null,
+      countsInCashflow: true,
     }));
 
     const accounts: Account[] = ((accountsResult.data ?? []) as Row[]).map(
@@ -318,6 +363,7 @@ export function useFinanceStore() {
       extractionMode: row.extraction_mode as FinancialDocument["extractionMode"],
       itemCount: number(row.extracted_item_count),
       createdAt: String(row.created_at),
+      invoiceItems: invoiceItemsFromRow(row),
     }));
 
     setState({
@@ -409,6 +455,8 @@ export function useFinanceStore() {
       financingUpdated?: boolean;
       updatedInstallments?: number;
       extractionMode?: string;
+      invoiceItems?: number | null;
+      invoiceTotalCents?: number | null;
     };
     if (!response.ok) throw new Error(payload.error ?? "Falha na importação.");
     await refresh();

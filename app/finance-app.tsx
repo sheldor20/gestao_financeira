@@ -42,6 +42,7 @@ import {
   monthlySummary,
   openInstallmentsTotalCents,
   transactionsWithDebtInstallments,
+  transactionsWithInvoiceDetails,
   type Account,
   type FinancialDocument,
   type Owner,
@@ -163,6 +164,7 @@ function monthLabel(month: string) {
 function sourceLabel(source: Transaction["source"]) {
   if (source === "bank_statement") return "Extrato";
   if (source === "card_invoice" || source === "invoice") return "Fatura";
+  if (source === "invoice_detail") return "Detalhe da fatura";
   if (source === "debt_installment") return "Parcela";
   if (source === "document_ai") return "Documento";
   return "Importado";
@@ -190,8 +192,12 @@ export function FinanceApp({ userEmail }: { userEmail: string }) {
   const importFormRef = useRef<HTMLFormElement>(null);
 
   const transactions = useMemo(
-    () => transactionsWithDebtInstallments(state.transactions, state.debts),
-    [state.transactions, state.debts],
+    () =>
+      transactionsWithDebtInstallments(
+        transactionsWithInvoiceDetails(state.transactions, state.documents),
+        state.debts,
+      ),
+    [state.transactions, state.documents, state.debts],
   );
   const summary = useMemo(
     () => monthlySummary(transactions, month, scope),
@@ -222,7 +228,7 @@ export function FinanceApp({ userEmail }: { userEmail: string }) {
     matchesScope(item.owner, scope),
   );
   const totals = accountTotals(state.accounts, scope);
-  const fixedExpenses = summary.visible.filter(
+  const fixedExpenses = summary.cashflow.filter(
     (item) => item.kind === "expense" && item.isFixedRecurring,
   );
   const categories = expenseByCategory(summary.visible).slice(0, 5);
@@ -249,6 +255,8 @@ export function FinanceApp({ userEmail }: { userEmail: string }) {
       notify(
         payload.financingUpdated
           ? `Financiamento atualizado com ${payload.updatedInstallments ?? 0} próximas parcelas.`
+          : payload.invoiceTotalCents
+            ? `Fatura de ${money(payload.invoiceTotalCents)} aplicada como saída, com ${payload.invoiceItems ?? 0} itens detalhados.`
           : `${payload.imported ?? 0} movimentações e ${payload.updatedAccounts ?? 0} saldos aplicados${payload.extractionMode === "ai" ? " pela IA" : " pela leitura básica"}.`,
       );
     } catch (error) {
@@ -442,7 +450,7 @@ export function FinanceApp({ userEmail }: { userEmail: string }) {
             <>
               <div className="metric-grid four">
                 <Metric icon={ArrowDownLeft} label="Entradas do grupo" value={money(summary.incomeCents)} tone="green" note={monthLabel(month)} />
-                <Metric icon={ArrowUpRight} label="Saídas do grupo" value={money(summary.expenseCents)} tone="coral" note={`${summary.visible.filter((item) => item.kind === "expense").length} lançamentos`} />
+                <Metric icon={ArrowUpRight} label="Saídas do grupo" value={money(summary.expenseCents)} tone="coral" note={`${summary.cashflow.filter((item) => item.kind === "expense").length} lançamentos`} />
                 <Metric icon={Banknote} label="Resultado do mês" value={money(summary.resultCents)} tone="purple" note="Entradas menos saídas" />
                 <Metric icon={PiggyBank} label="Patrimônio" value={money(totals.netWorthCents)} tone="blue" note={`${visibleAccounts.length} contas e bens`} />
               </div>
@@ -495,12 +503,14 @@ export function FinanceApp({ userEmail }: { userEmail: string }) {
                       {visibleTransactions.map((item) => (
                         <tr key={item.id}>
                           <td>{dateLabel(item.transactionDate)}</td>
-                          <td><div className="transaction-name"><i className={item.kind}><span>{item.kind === "income" ? "↓" : item.kind === "expense" ? "↑" : "↔"}</span></i><div><strong>{item.description}</strong>{item.isFixedRecurring && <span className="fixed-label">Fixo · {item.recurrenceStreak} meses</span>}</div></div></td>
+                          <td><div className="transaction-name"><i className={item.kind}><span>{item.kind === "income" ? "↓" : item.kind === "expense" ? "↑" : "↔"}</span></i><div><strong>{item.description}</strong>{!item.countsInCashflow && <span className="detail-label">Informativo · já incluído no total</span>}{item.isFixedRecurring && <span className="fixed-label">Fixo · {item.recurrenceStreak} meses</span>}</div></div></td>
                           <td>{ownerBadge(item.owner)}</td>
                           <td><span className="source-badge">{sourceLabel(item.source)}</span></td>
                           <td>{item.category}</td>
                           <td>
-                            {item.source === "debt_installment" ? (
+                            {!item.countsInCashflow ? (
+                              <span className="invoice-detail-link">Na fatura</span>
+                            ) : item.source === "debt_installment" ? (
                               <span className="scheduled-link">Agendada</span>
                             ) : item.kind === "expense" && state.debts.length ? (
                               <select className="inline-select" value={item.debtId ?? ""} onChange={async (event) => {

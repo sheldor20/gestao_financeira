@@ -10,6 +10,8 @@ import {
   openInstallmentsTotalCents,
   proportionalSplit,
   transactionsWithDebtInstallments,
+  transactionsWithInvoiceDetails,
+  type FinancialDocument,
   type Debt,
   type Transaction,
 } from "../lib/finance-domain.ts";
@@ -47,6 +49,7 @@ function movement(
     sourceDocumentId: null,
     debtId: null,
     goalId: null,
+    countsInCashflow: true,
   };
 }
 
@@ -139,6 +142,68 @@ test("consolida entradas e saídas por pessoa e mês", () => {
   assert.equal(all.expenseCents, 580_000);
   assert.equal(kim.incomeCents, 4_000_000);
   assert.equal(kim.expenseCents, 500_000);
+});
+
+test("mostra itens da fatura sem somá-los outra vez na saída mensal", () => {
+  const invoiceTotal = {
+    ...movement(
+      "invoice-total",
+      "kim",
+      "expense",
+      1_974_959,
+      "2026-09-01",
+      "Fatura Banco Inter",
+    ),
+    source: "card_invoice" as const,
+    sourceDocumentId: "invoice-document",
+  };
+  const document: FinancialDocument = {
+    id: "invoice-document",
+    owner: "kim",
+    documentType: "credit_card_invoice",
+    filename: "Fatura.pdf",
+    institution: "Banco Inter",
+    periodStart: "2026-09-01",
+    periodEnd: "2026-09-01",
+    status: "applied",
+    extractionMode: "deterministic",
+    itemCount: 2,
+    createdAt: "2026-08-28T12:00:00Z",
+    invoiceItems: [
+      {
+        date: "2026-09-01",
+        description: "Compra A",
+        amountCents: 1_000_000,
+        kind: "expense",
+        category: "Outros",
+        merchant: "compra a",
+        installmentCurrent: null,
+        installmentTotal: null,
+        confidence: 0.99,
+      },
+      {
+        date: "2026-09-01",
+        description: "Compra B",
+        amountCents: 982_593,
+        kind: "expense",
+        category: "Outros",
+        merchant: "compra b",
+        installmentCurrent: null,
+        installmentTotal: null,
+        confidence: 0.99,
+      },
+    ],
+  };
+  const withDetails = transactionsWithInvoiceDetails([invoiceTotal], [document]);
+  const summary = monthlySummary(withDetails, "2026-09", "all");
+
+  assert.equal(summary.expenseCents, 1_974_959);
+  assert.equal(summary.visible.length, 3);
+  assert.equal(summary.cashflow.length, 1);
+  assert.equal(
+    withDetails.filter((item) => item.source === "invoice_detail").length,
+    2,
+  );
 });
 
 test("soma as parcelas abertas como total devido do financiamento", () => {

@@ -49,6 +49,7 @@ export type TransactionSource =
   | "bank_statement"
   | "card_invoice"
   | "document_ai"
+  | "invoice_detail"
   | "debt_installment";
 
 export type Transaction = {
@@ -73,6 +74,19 @@ export type Transaction = {
   sourceDocumentId: string | null;
   debtId: string | null;
   goalId: string | null;
+  countsInCashflow: boolean;
+};
+
+export type InvoiceItem = {
+  date: string;
+  description: string;
+  amountCents: number;
+  kind: TransactionKind;
+  category: string;
+  merchant: string;
+  installmentCurrent: number | null;
+  installmentTotal: number | null;
+  confidence: number;
 };
 
 export type Debt = {
@@ -149,6 +163,7 @@ export type FinancialDocument = {
   extractionMode: "ai" | "deterministic" | null;
   itemCount: number;
   createdAt: string;
+  invoiceItems: InvoiceItem[];
 };
 
 export type FinanceState = {
@@ -246,12 +261,49 @@ export function transactionsWithDebtInstallments(
           sourceDocumentId: installment.sourceDocumentId,
           debtId: debt.id,
           goalId: null,
+          countsInCashflow: true,
         },
       ];
     }),
   );
 
   return [...transactions, ...scheduled].sort((left, right) =>
+    right.transactionDate.localeCompare(left.transactionDate),
+  );
+}
+
+export function transactionsWithInvoiceDetails(
+  transactions: Transaction[],
+  documents: FinancialDocument[],
+) {
+  const details = documents.flatMap((document) =>
+    document.invoiceItems.map((item, index) => ({
+      id: `invoice-detail:${document.id}:${index}`,
+      owner: document.owner,
+      kind: item.kind,
+      description: item.description,
+      category: item.category,
+      amountCents: item.amountCents,
+      transactionDate: item.date,
+      status: "paid" as const,
+      source: "invoice_detail" as const,
+      accountId: null,
+      cardId: null,
+      installmentCurrent: item.installmentCurrent,
+      installmentTotal: item.installmentTotal,
+      note: "Detalhe informativo; o total da fatura é a saída mensal.",
+      merchantKey: normalizeMerchant(item.merchant || item.description),
+      isFixedRecurring: false,
+      recurrenceStreak: 0,
+      aiConfidence: item.confidence,
+      sourceDocumentId: document.id,
+      debtId: null,
+      goalId: null,
+      countsInCashflow: false,
+    })),
+  );
+
+  return [...transactions, ...details].sort((left, right) =>
     right.transactionDate.localeCompare(left.transactionDate),
   );
 }
@@ -274,10 +326,11 @@ export function monthlySummary(
   scope: Scope,
 ) {
   const visible = transactionsForPeriod(transactions, month, scope);
-  const incomeCents = visible
+  const cashflow = visible.filter((item) => item.countsInCashflow);
+  const incomeCents = cashflow
     .filter((item) => item.kind === "income")
     .reduce((sum, item) => sum + item.amountCents, 0);
-  const expenseCents = visible
+  const expenseCents = cashflow
     .filter((item) => item.kind === "expense")
     .reduce((sum, item) => sum + item.amountCents, 0);
   return {
@@ -285,6 +338,7 @@ export function monthlySummary(
     expenseCents,
     resultCents: incomeCents - expenseCents,
     visible,
+    cashflow,
   };
 }
 
@@ -297,6 +351,7 @@ export function monthlyIncomeByPerson(
       .filter(
         (item) =>
           item.kind === "income" &&
+          item.countsInCashflow &&
           item.owner === "kim" &&
           item.transactionDate.startsWith(month),
       )
@@ -305,6 +360,7 @@ export function monthlyIncomeByPerson(
       .filter(
         (item) =>
           item.kind === "income" &&
+          item.countsInCashflow &&
           item.owner === "alexandre" &&
           item.transactionDate.startsWith(month),
       )
@@ -315,7 +371,7 @@ export function monthlyIncomeByPerson(
 export function expenseByCategory(transactions: Transaction[]) {
   return Object.entries(
     transactions
-      .filter((item) => item.kind === "expense")
+      .filter((item) => item.kind === "expense" && item.countsInCashflow)
       .reduce<Record<string, number>>((totals, item) => {
         totals[item.category] = (totals[item.category] ?? 0) + item.amountCents;
         return totals;
@@ -376,7 +432,7 @@ export function classifyFixedExpenses(transactions: Transaction[]) {
   const groups = new Map<string, Map<string, Transaction[]>>();
 
   for (const transaction of transactions) {
-    if (transaction.kind !== "expense") continue;
+    if (transaction.kind !== "expense" || !transaction.countsInCashflow) continue;
     const merchant =
       transaction.merchantKey || normalizeMerchant(transaction.description);
     if (!merchant) continue;
@@ -441,6 +497,7 @@ export function debtPaidCents(debtId: string, transactions: Transaction[]) {
     .filter(
       (item) =>
         item.debtId === debtId &&
+        item.countsInCashflow &&
         item.kind === "expense" &&
         item.status === "paid",
     )
@@ -449,6 +506,9 @@ export function debtPaidCents(debtId: string, transactions: Transaction[]) {
 
 export function goalSavedCents(goalId: string, transactions: Transaction[]) {
   return transactions
-    .filter((item) => item.goalId === goalId && item.status === "paid")
+    .filter(
+      (item) =>
+        item.goalId === goalId && item.status === "paid" && item.countsInCashflow,
+    )
     .reduce((sum, item) => sum + item.amountCents, 0);
 }
