@@ -4,18 +4,12 @@ import {
   type DocumentType,
   type ExtractedTransaction,
 } from "@/app/lib/document-extractor";
+import { normalizeFinancialDocumentContentType } from "@/lib/document-upload";
 import { normalizeMerchant, type Owner } from "@/lib/finance-domain";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
-
-const allowedTypes = new Set([
-  "application/pdf",
-  "text/csv",
-  "text/plain",
-  "application/vnd.ms-excel",
-]);
 
 const documentTypes = new Set<DocumentType>([
   "bank_statement",
@@ -126,7 +120,11 @@ export async function POST(request: Request) {
         { status: 400 },
       );
     }
-    if (!allowedTypes.has(file.type) && !/\.(pdf|csv|txt)$/i.test(file.name)) {
+    const contentType = normalizeFinancialDocumentContentType({
+      name: file.name,
+      type: file.type,
+    });
+    if (!contentType) {
       return Response.json(
         { error: "Envie PDF, CSV ou TXT." },
         { status: 400 },
@@ -156,40 +154,57 @@ export async function POST(request: Request) {
     const checksum = createHash("sha256").update(bytes).digest("hex");
     const { data: duplicate } = await supabase
       .from("financial_documents")
-      .select("id, status")
+      .select("id, status, storage_path")
       .eq("household_id", householdId)
       .eq("content_checksum", checksum)
       .maybeSingle();
-    if (duplicate) {
+    if (duplicate && duplicate.status !== "failed") {
       return Response.json(
         { error: "Este documento já foi importado." },
         { status: 409 },
       );
     }
 
-    documentId = crypto.randomUUID();
-    const storagePath = `${householdId}/${documentId}/${safeFilename(file.name)}`;
+    documentId = duplicate?.id ?? crypto.randomUUID();
+    const storagePath =
+      duplicate?.storage_path ??
+      `${householdId}/${documentId}/${safeFilename(file.name)}`;
+    if (duplicate) {
+      const { error: removeError } = await supabase.storage
+        .from("financial-documents")
+        .remove([storagePath]);
+      if (removeError) throw removeError;
+    }
     const { error: uploadError } = await supabase.storage
       .from("financial-documents")
       .upload(storagePath, bytes, {
-        contentType: file.type || "application/octet-stream",
+        contentType,
         upsert: false,
       });
     if (uploadError) throw uploadError;
 
-    const { error: documentError } = await supabase
-      .from("financial_documents")
-      .insert({
-        id: documentId,
-        household_id: householdId,
-        ...ownerData,
-        document_type: documentType,
-        file_name: file.name,
-        mime_type: file.type || "application/octet-stream",
-        storage_path: storagePath,
-        content_checksum: checksum,
-        status: "processing",
-      });
+    const documentPayload = {
+      household_id: householdId,
+      ...ownerData,
+      document_type: documentType,
+      file_name: file.name,
+      mime_type: contentType,
+      storage_path: storagePath,
+      content_checksum: checksum,
+      status: "processing",
+      error_message: null,
+    };
+    const documentRequest = duplicate
+      ? supabase
+          .from("financial_documents")
+          .update(documentPayload)
+          .eq("id", documentId)
+          .eq("household_id", householdId)
+          .eq("status", "failed")
+      : supabase
+          .from("financial_documents")
+          .insert({ id: documentId, ...documentPayload });
+    const { error: documentError } = await documentRequest;
     if (documentError) {
       await supabase.storage.from("financial-documents").remove([storagePath]);
       throw documentError;
@@ -197,7 +212,7 @@ export async function POST(request: Request) {
 
     const extraction = await extractFinancialDocument(
       bytes,
-      { name: file.name, type: file.type || "application/pdf" },
+      { name: file.name, type: contentType },
       documentType,
       period,
     );
@@ -251,15 +266,7 @@ export async function POST(request: Request) {
         .digest("hex"),
     }));
 
-    if (transactionRows.length) {
-      const { error: transactionError } = await supabase
-        .from("transactions")
-        .insert(transactionRows);
-      if (transactionError) throw transactionError;
-    }
-
-    let updatedAccounts = 0;
-    for (const balance of extraction.data.balances) {
+    const balanceRows = extraction.data.balances.map((balance) => {
       const match = (existingAccounts ?? []).find(
         (item) =>
           item.owner_scope === ownerData.owner_scope &&
@@ -267,81 +274,63 @@ export async function POST(request: Request) {
           item.account_type === balance.accountType &&
           normalizeMerchant(item.name) === normalizeMerchant(balance.name),
       );
-      if (match) {
-        const { error: updateError } = await supabase
-          .from("accounts")
-          .update({
-            balance_cents: balance.balanceCents,
-            balance_date: balance.balanceDate,
-            institution: balance.institution,
-            source_document_id: documentId,
-          })
-          .eq("id", match.id)
-          .eq("household_id", householdId);
-        if (updateError) throw updateError;
-      } else {
-        const { error: accountError } = await supabase.from("accounts").insert({
-          household_id: householdId,
-          ...ownerData,
-          name: balance.name,
-          institution: balance.institution,
-          account_type: balance.accountType,
-          balance_cents: balance.balanceCents,
-          balance_date: balance.balanceDate,
-          include_in_net_worth: balance.accountType !== "insurance",
-          source_document_id: documentId,
-        });
-        if (accountError) throw accountError;
-      }
-      updatedAccounts += 1;
-    }
-
-    if (documentType === "credit_card_invoice") {
-      const totalCents = extraction.data.transactions
-        .filter((item) => item.kind === "expense")
-        .reduce((sum, item) => sum + item.amountCents, 0);
-      const { error: invoiceError } = await supabase.from("invoices").insert({
-        household_id: householdId,
+      return {
+        account_id: match?.id ?? null,
         ...ownerData,
-        credit_card_id: cardId,
-        filename: file.name,
-        period: `${period}-01`,
-        total_cents: totalCents,
-        item_count: transactionRows.length,
-        status: "reviewed",
-        content_checksum: checksum,
-        source_document_id: documentId,
-      });
-      if (invoiceError) throw invoiceError;
-    }
-
-    await supabase.rpc("reclassify_fixed_expenses", {
-      household_id_input: householdId,
+        name: balance.name,
+        institution: balance.institution,
+        account_type: balance.accountType,
+        balance_cents: balance.balanceCents,
+        balance_date: balance.balanceDate,
+        include_in_net_worth: balance.accountType !== "insurance",
+      };
     });
 
-    const { error: appliedError } = await supabase
-      .from("financial_documents")
-      .update({
-        institution: extraction.data.institution,
-        period_start: extraction.data.periodStart,
-        period_end: extraction.data.periodEnd,
-        status: "applied",
-        extraction_model: extraction.model,
-        extraction_mode: extraction.mode,
-        extracted_item_count:
-          extraction.data.transactions.length + extraction.data.balances.length,
-        raw_extraction: extraction.data,
-        error_message: null,
-      })
-      .eq("id", documentId)
-      .eq("household_id", householdId);
-    if (appliedError) throw appliedError;
+    const invoiceRow =
+      documentType === "credit_card_invoice"
+        ? {
+            ...ownerData,
+            credit_card_id: cardId,
+            filename: file.name,
+            period: `${period}-01`,
+            total_cents: extraction.data.transactions
+              .filter((item) => item.kind === "expense")
+              .reduce((sum, item) => sum + item.amountCents, 0),
+            item_count: transactionRows.length,
+            status: "reviewed",
+            content_checksum: checksum,
+          }
+        : null;
+
+    const { data: application, error: applicationError } = await supabase.rpc(
+      "apply_financial_document_import",
+      {
+        household_id_input: householdId,
+        document_id_input: documentId,
+        transaction_rows_input: transactionRows,
+        balance_rows_input: balanceRows,
+        invoice_input: invoiceRow,
+        document_result_input: {
+          institution: extraction.data.institution,
+          period_start: extraction.data.periodStart,
+          period_end: extraction.data.periodEnd,
+          extraction_model: extraction.model,
+          extraction_mode: extraction.mode,
+          extracted_item_count:
+            extraction.data.transactions.length + extraction.data.balances.length,
+          raw_extraction: extraction.data,
+        },
+      },
+    );
+    if (applicationError) throw applicationError;
 
     return Response.json(
       {
         documentId,
-        imported: transactionRows.length,
-        updatedAccounts,
+        imported: Number(application?.imported ?? transactionRows.length),
+        updatedAccounts: Number(
+          application?.updated_accounts ?? balanceRows.length,
+        ),
         extractionMode: extraction.mode,
       },
       { status: 201 },
