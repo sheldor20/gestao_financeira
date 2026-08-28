@@ -28,6 +28,9 @@ test("lê todas as parcelas não pagas do DDC do Itaú", () => {
   assert.equal(financing.installmentTotal, 360);
   assert.equal(financing.nextDueDate, "2026-08-30");
   assert.equal(financing.interestRateAnnualPercent, 9.2937228);
+  assert.equal(financing.assetDescription, "Apartamento financiado");
+  assert.equal(financing.assetValueCents, 23_600_000);
+  assert.equal(financing.assetValueSource, "financed_amount");
   assert.equal(financing.installments.length, 3);
   assert.deepEqual(
     financing.installments.map((item) => item.status),
