@@ -3,7 +3,10 @@ import { extractText, getDocumentProxy } from "unpdf";
 import { parseDdcFinancingDocument } from "./financing-ddc-parser";
 import { parseInterCreditCardInvoice } from "./inter-credit-card-parser";
 import { parseInvoiceText } from "./invoice-parser";
-import { normalizeMerchant } from "@/lib/finance-domain";
+import {
+  isNonAssetBalanceName,
+  normalizeMerchant,
+} from "@/lib/finance-domain";
 
 export type DocumentType =
   | "bank_statement"
@@ -65,6 +68,13 @@ export type ExtractedFinancing = {
   nextDueDate: string | null;
   interestRateAnnualPercent: number | null;
   explicitAmortizationCents: number | null;
+  assetDescription: string | null;
+  assetValueCents: number | null;
+  assetValueSource:
+    | "property_value"
+    | "purchase_price"
+    | "financed_amount"
+    | null;
   installments: ExtractedFinancingInstallment[];
 };
 
@@ -245,6 +255,9 @@ const extractionSchema = {
             "nextDueDate",
             "interestRateAnnualPercent",
             "explicitAmortizationCents",
+            "assetDescription",
+            "assetValueCents",
+            "assetValueSource",
             "installments",
           ],
           properties: {
@@ -260,6 +273,17 @@ const extractionSchema = {
             nextDueDate: { type: ["string", "null"] },
             interestRateAnnualPercent: { type: ["number", "null"], minimum: 0 },
             explicitAmortizationCents: { type: ["integer", "null"], minimum: 0 },
+            assetDescription: { type: ["string", "null"] },
+            assetValueCents: { type: ["integer", "null"], minimum: 0 },
+            assetValueSource: {
+              type: ["string", "null"],
+              enum: [
+                "property_value",
+                "purchase_price",
+                "financed_amount",
+                null,
+              ],
+            },
             installments: {
               type: "array",
               items: {
@@ -311,9 +335,11 @@ Regras obrigatórias:
 - Em documentos de investimento, previdência e seguros, extraia o saldo atual em balances.
 - Em financiamento, preencha financing com o contrato, saldo devedor e somente as parcelas exibidas no documento. Não transforme o cronograma em transactions e use invoice como null.
 - A description do financiamento deve ser curta e estável entre documentos, como "Financiamento do apartamento", sem saldo, parcela ou data.
+- Em financiamento, identifique também o bem: assetDescription deve descrever o imóvel ou veículo e assetValueCents deve usar, nesta ordem, valor do imóvel/avaliação, preço de compra ou valor originalmente financiado. Informe a origem em assetValueSource. Nunca use saldo devedor como valor do bem.
 - Use a referência do contrato exatamente como aparece. Se estiver mascarada, mantenha a máscara; nunca complete dígitos ausentes.
 - explicitAmortizationCents só deve ser preenchido quando o documento disser explicitamente que houve amortização, liquidação antecipada ou redução extraordinária. Uma parcela normal não é amortização extraordinária.
 - Em installments, separe principal, juros e encargos apenas quando estiverem discriminados; caso contrário use null. Não projete parcelas que não estejam no PDF.
+- Limites de crédito, limites de cartão, saldo devedor, saldo financiado, faturas e compras parceladas nunca são balances nem patrimônio.
 - Nunca invente datas, valores, contas ou transações. Se não estiver legível, omita o item.
 - Use categorias curtas em português: Moradia, Alimentação, Transporte, Saúde, Educação, Lazer, Assinaturas, Impostos, Dívidas, Investimentos, Seguros, Transferências, Renda ou Outros.
 - merchant deve ser o nome estável do estabelecimento ou contraparte, sem números de parcela, datas ou identificadores.
@@ -374,10 +400,16 @@ function cleanExtraction(
     periodStart: value.periodStart || null,
     periodEnd: value.periodEnd || null,
     transactions,
-    balances: (documentType === "credit_card_invoice" ? [] : value.balances)
+    balances: (["credit_card_invoice", "financing_statement"].includes(
+      documentType ?? "",
+    )
+      ? []
+      : value.balances)
       .filter(
         (item) =>
-          item.name.trim() && /^\d{4}-\d{2}-\d{2}$/.test(item.balanceDate),
+          item.name.trim() &&
+          !isNonAssetBalanceName(item.name) &&
+          /^\d{4}-\d{2}-\d{2}$/.test(item.balanceDate),
       )
       .map((item) => ({
         ...item,
@@ -393,6 +425,8 @@ function cleanExtraction(
           description: value.financing.description.trim().slice(0, 240),
           institution:
             value.financing.institution?.trim().slice(0, 120) || null,
+          assetDescription:
+            value.financing.assetDescription?.trim().slice(0, 240) || null,
           statementDate:
             value.financing.statementDate &&
             /^\d{4}-\d{2}-\d{2}$/.test(value.financing.statementDate)
