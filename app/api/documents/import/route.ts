@@ -227,7 +227,7 @@ export async function POST(request: Request) {
       .from("household_members")
       .select("id, person_key")
       .eq("household_id", householdId)
-      .eq("status", "active");
+      .in("status", ["active", "invited"]);
     if (membersError) throw membersError;
     const ownerData = ownerColumnsForSelection(
       owner,
