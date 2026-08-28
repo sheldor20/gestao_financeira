@@ -1,5 +1,6 @@
 import OpenAI from "openai";
 import { extractText, getDocumentProxy } from "unpdf";
+import { parseDdcFinancingDocument } from "./financing-ddc-parser";
 import { parseInvoiceText } from "./invoice-parser";
 import { normalizeMerchant } from "@/lib/finance-domain";
 
@@ -359,13 +360,7 @@ async function deterministicExtraction(
   documentType: DocumentType,
   period: string,
 ) {
-  let text = "";
-  if (file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf")) {
-    const pdf = await getDocumentProxy(bytes);
-    text = (await extractText(pdf, { mergePages: true })).text;
-  } else {
-    text = new TextDecoder("utf-8").decode(bytes);
-  }
+  const text = await extractDocumentText(bytes, file);
 
   const items = parseInvoiceText(text, period).map((item) => ({
     date: item.transactionDate,
@@ -389,12 +384,43 @@ async function deterministicExtraction(
   } satisfies ExtractedFinancialDocument;
 }
 
+async function extractDocumentText(
+  bytes: Uint8Array,
+  file: { name: string; type: string },
+) {
+  if (
+    file.type === "application/pdf" ||
+    file.name.toLowerCase().endsWith(".pdf")
+  ) {
+    const pdf = await getDocumentProxy(bytes);
+    return (await extractText(pdf, { mergePages: true })).text;
+  }
+  return new TextDecoder("utf-8").decode(bytes);
+}
+
 export async function extractFinancialDocument(
   bytes: Uint8Array,
   file: { name: string; type: string },
   documentType: DocumentType,
   period: string,
 ) {
+  if (documentType === "financing_statement") {
+    try {
+      const deterministic = parseDdcFinancingDocument(
+        await extractDocumentText(bytes, file),
+      );
+      if (deterministic) {
+        return {
+          data: cleanExtraction(deterministic),
+          model: null,
+          mode: "deterministic" as const,
+        };
+      }
+    } catch {
+      // Se não for um DDC legível, a leitura inteligente continua como fallback.
+    }
+  }
+
   const ai = await extractWithAI(bytes, file, documentType);
   if (ai) return { ...ai, mode: "ai" as const };
   if (documentType !== "credit_card_invoice") {
