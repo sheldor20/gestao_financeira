@@ -18,6 +18,7 @@ import {
   type Transaction,
   type TransactionSource,
 } from "./finance-domain";
+import { ownerColumnsForSelection } from "./owner-selection";
 import { createSupabaseBrowserClient } from "./supabase/client";
 
 type Row = Record<string, unknown>;
@@ -32,15 +33,6 @@ function ownerFromRow(row: Row, members: Member[]): Owner {
     members.find((member) => member.memberId === row.owner_member_id)?.id ??
     "joint"
   );
-}
-
-function ownerColumns(owner: Owner, members: Member[]) {
-  if (owner === "joint") {
-    return { owner_scope: "joint", owner_member_id: null };
-  }
-  const member = members.find((item) => item.id === owner);
-  if (!member) throw new Error(`${owner} ainda não está no espaço do casal.`);
-  return { owner_scope: "individual", owner_member_id: member.memberId };
 }
 
 function firstError(results: Array<{ error: { message: string } | null }>) {
@@ -424,7 +416,13 @@ export function useFinanceStore() {
   ) {
     const { error: insertError } = await supabase.from("debts").insert({
       household_id: state.householdId,
-      ...ownerColumns(input.owner, state.people),
+      ...ownerColumnsForSelection(
+        input.owner,
+        state.people.map((member) => ({
+          personKey: member.id,
+          memberId: member.memberId,
+        })),
+      ),
       description: input.description,
       total_cents: input.totalCents,
       installment_cents: input.installmentCents,
@@ -441,7 +439,13 @@ export function useFinanceStore() {
   async function addGoal(input: Omit<Goal, "id" | "currentCents" | "status">) {
     const { error: insertError } = await supabase.from("goals").insert({
       household_id: state.householdId,
-      ...ownerColumns(input.owner, state.people),
+      ...ownerColumnsForSelection(
+        input.owner,
+        state.people.map((member) => ({
+          personKey: member.id,
+          memberId: member.memberId,
+        })),
+      ),
       name: input.name,
       target_cents: input.targetCents,
       current_cents: 0,
