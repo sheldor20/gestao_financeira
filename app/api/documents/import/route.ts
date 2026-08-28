@@ -2,8 +2,10 @@ import { createHash } from "node:crypto";
 import {
   extractFinancialDocument,
   type DocumentType,
+  type ExtractedFinancing,
   type ExtractedTransaction,
 } from "@/app/lib/document-extractor";
+import { financingContractKey } from "@/lib/financing";
 import { normalizeFinancialDocumentContentType } from "@/lib/document-upload";
 import { normalizeMerchant, type Owner } from "@/lib/finance-domain";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
@@ -14,11 +16,85 @@ export const maxDuration = 60;
 const documentTypes = new Set<DocumentType>([
   "bank_statement",
   "credit_card_invoice",
+  "financing_statement",
   "investment_statement",
   "insurance_statement",
   "pension_statement",
   "other",
 ]);
+
+function financingRow(
+  financing: ExtractedFinancing,
+  owner: Owner,
+  ownerData: { owner_scope: string; owner_member_id: string | null },
+  period: string,
+) {
+  const firstInstallment = financing.installments[0] ?? null;
+  const statementDate =
+    financing.statementDate ?? financing.nextDueDate ?? `${period}-01`;
+  const dueDate = financing.nextDueDate ?? firstInstallment?.dueDate;
+  const outstandingCents = financing.outstandingAmountCents;
+
+  if (outstandingCents === null) {
+    throw new Error("Não encontrei o saldo devedor no PDF do financiamento.");
+  }
+  if (!dueDate) {
+    throw new Error("Não encontrei o próximo vencimento no PDF do financiamento.");
+  }
+
+  const installmentCurrent =
+    financing.installmentCurrent ?? firstInstallment?.installmentNumber ?? 1;
+  const highestExtractedInstallment = financing.installments.reduce(
+    (highest, item) => Math.max(highest, item.installmentNumber),
+    installmentCurrent,
+  );
+  const installmentTotal = Math.max(
+    installmentCurrent,
+    highestExtractedInstallment,
+    financing.installmentTotal ?? 0,
+  );
+  const installmentCents =
+    financing.installmentAmountCents ?? firstInstallment?.amountCents ?? 0;
+  const totalCents = Math.max(
+    financing.originalAmountCents ?? outstandingCents,
+    outstandingCents,
+  );
+  const description =
+    financing.description ||
+    `Financiamento ${financing.institution ?? "imobiliário"}`;
+
+  return {
+    ...ownerData,
+    description,
+    institution: financing.institution,
+    contract_reference: financing.contractReference,
+    contract_key: financingContractKey({
+      institution: financing.institution,
+      contractReference: financing.contractReference,
+      description,
+      owner,
+    }),
+    total_cents: totalCents,
+    outstanding_cents: outstandingCents,
+    installment_cents: installmentCents,
+    installment_current: installmentCurrent,
+    installment_total: installmentTotal,
+    due_date: dueDate,
+    statement_date: statementDate,
+    interest_rate_annual: financing.interestRateAnnualPercent,
+    amortization_cents: financing.explicitAmortizationCents ?? 0,
+    installments: financing.installments.map((item) => ({
+      installment_number: item.installmentNumber,
+      due_date: item.dueDate,
+      amount_cents: item.amountCents,
+      principal_cents: item.principalCents,
+      interest_cents: item.interestCents,
+      fees_cents: item.feesCents,
+      remaining_balance_cents: item.remainingBalanceCents,
+      status: item.status,
+    })),
+  };
+}
 
 function safeFilename(name: string) {
   return name
@@ -216,6 +292,11 @@ export async function POST(request: Request) {
       documentType,
       period,
     );
+    if (documentType === "financing_statement" && !extraction.data.financing) {
+      throw new Error(
+        "O PDF não trouxe dados suficientes para identificar um financiamento.",
+      );
+    }
 
     const [{ data: debts }, { data: goals }, { data: existingAccounts }] =
       await Promise.all([
@@ -302,6 +383,11 @@ export async function POST(request: Request) {
           }
         : null;
 
+    const financing =
+      documentType === "financing_statement" && extraction.data.financing
+      ? financingRow(extraction.data.financing, owner, ownerData, period)
+      : null;
+
     const { data: application, error: applicationError } = await supabase.rpc(
       "apply_financial_document_import",
       {
@@ -310,6 +396,7 @@ export async function POST(request: Request) {
         transaction_rows_input: transactionRows,
         balance_rows_input: balanceRows,
         invoice_input: invoiceRow,
+        financing_input: financing,
         document_result_input: {
           institution: extraction.data.institution,
           period_start: extraction.data.periodStart,
@@ -317,7 +404,9 @@ export async function POST(request: Request) {
           extraction_model: extraction.model,
           extraction_mode: extraction.mode,
           extracted_item_count:
-            extraction.data.transactions.length + extraction.data.balances.length,
+            extraction.data.transactions.length +
+            extraction.data.balances.length +
+            (financing ? 1 + financing.installments.length : 0),
           raw_extraction: extraction.data,
         },
       },
@@ -331,6 +420,8 @@ export async function POST(request: Request) {
         updatedAccounts: Number(
           application?.updated_accounts ?? balanceRows.length,
         ),
+        financingUpdated: Boolean(application?.financing_debt_id),
+        updatedInstallments: Number(application?.updated_installments ?? 0),
         extractionMode: extraction.mode,
       },
       { status: 201 },

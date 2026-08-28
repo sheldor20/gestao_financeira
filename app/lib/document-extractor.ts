@@ -6,6 +6,7 @@ import { normalizeMerchant } from "@/lib/finance-domain";
 export type DocumentType =
   | "bank_statement"
   | "credit_card_invoice"
+  | "financing_statement"
   | "investment_statement"
   | "insurance_statement"
   | "pension_statement"
@@ -38,12 +39,40 @@ export type ExtractedBalance = {
   balanceDate: string;
 };
 
+export type ExtractedFinancingInstallment = {
+  installmentNumber: number;
+  dueDate: string;
+  amountCents: number;
+  principalCents: number | null;
+  interestCents: number | null;
+  feesCents: number | null;
+  remainingBalanceCents: number | null;
+  status: "pending" | "paid" | "overdue" | "partially_paid";
+};
+
+export type ExtractedFinancing = {
+  contractReference: string | null;
+  description: string;
+  institution: string | null;
+  statementDate: string | null;
+  originalAmountCents: number | null;
+  outstandingAmountCents: number | null;
+  installmentAmountCents: number | null;
+  installmentCurrent: number | null;
+  installmentTotal: number | null;
+  nextDueDate: string | null;
+  interestRateAnnualPercent: number | null;
+  explicitAmortizationCents: number | null;
+  installments: ExtractedFinancingInstallment[];
+};
+
 export type ExtractedFinancialDocument = {
   institution: string | null;
   periodStart: string | null;
   periodEnd: string | null;
   transactions: ExtractedTransaction[];
   balances: ExtractedBalance[];
+  financing: ExtractedFinancing | null;
 };
 
 const extractionSchema = {
@@ -55,6 +84,7 @@ const extractionSchema = {
     "periodEnd",
     "transactions",
     "balances",
+    "financing",
   ],
   properties: {
     institution: { type: ["string", "null"] },
@@ -121,6 +151,74 @@ const extractionSchema = {
         },
       },
     },
+    financing: {
+      anyOf: [
+        { type: "null" },
+        {
+          type: "object",
+          additionalProperties: false,
+          required: [
+            "contractReference",
+            "description",
+            "institution",
+            "statementDate",
+            "originalAmountCents",
+            "outstandingAmountCents",
+            "installmentAmountCents",
+            "installmentCurrent",
+            "installmentTotal",
+            "nextDueDate",
+            "interestRateAnnualPercent",
+            "explicitAmortizationCents",
+            "installments",
+          ],
+          properties: {
+            contractReference: { type: ["string", "null"] },
+            description: { type: "string" },
+            institution: { type: ["string", "null"] },
+            statementDate: { type: ["string", "null"] },
+            originalAmountCents: { type: ["integer", "null"], minimum: 0 },
+            outstandingAmountCents: { type: ["integer", "null"], minimum: 0 },
+            installmentAmountCents: { type: ["integer", "null"], minimum: 0 },
+            installmentCurrent: { type: ["integer", "null"], minimum: 1 },
+            installmentTotal: { type: ["integer", "null"], minimum: 1 },
+            nextDueDate: { type: ["string", "null"] },
+            interestRateAnnualPercent: { type: ["number", "null"], minimum: 0 },
+            explicitAmortizationCents: { type: ["integer", "null"], minimum: 0 },
+            installments: {
+              type: "array",
+              items: {
+                type: "object",
+                additionalProperties: false,
+                required: [
+                  "installmentNumber",
+                  "dueDate",
+                  "amountCents",
+                  "principalCents",
+                  "interestCents",
+                  "feesCents",
+                  "remainingBalanceCents",
+                  "status",
+                ],
+                properties: {
+                  installmentNumber: { type: "integer", minimum: 1 },
+                  dueDate: { type: "string" },
+                  amountCents: { type: "integer", minimum: 0 },
+                  principalCents: { type: ["integer", "null"], minimum: 0 },
+                  interestCents: { type: ["integer", "null"], minimum: 0 },
+                  feesCents: { type: ["integer", "null"], minimum: 0 },
+                  remainingBalanceCents: { type: ["integer", "null"], minimum: 0 },
+                  status: {
+                    type: "string",
+                    enum: ["pending", "paid", "overdue", "partially_paid"],
+                  },
+                },
+              },
+            },
+          },
+        },
+      ],
+    },
   },
 } as const;
 
@@ -133,6 +231,11 @@ Regras obrigatórias:
 - Em faturas de cartão, extraia cada compra como expense e ignore linhas de total, limite, saldo anterior e pagamento da fatura.
 - Em extratos, extraia todas as entradas, saídas e transferências, sem transformar saldo em transação.
 - Em documentos de investimento, previdência e seguros, extraia o saldo atual em balances.
+- Em financiamento, preencha financing com o contrato, saldo devedor e somente as parcelas exibidas no documento. Não transforme o cronograma em transactions.
+- A description do financiamento deve ser curta e estável entre documentos, como "Financiamento do apartamento", sem saldo, parcela ou data.
+- Use a referência do contrato exatamente como aparece. Se estiver mascarada, mantenha a máscara; nunca complete dígitos ausentes.
+- explicitAmortizationCents só deve ser preenchido quando o documento disser explicitamente que houve amortização, liquidação antecipada ou redução extraordinária. Uma parcela normal não é amortização extraordinária.
+- Em installments, separe principal, juros e encargos apenas quando estiverem discriminados; caso contrário use null. Não projete parcelas que não estejam no PDF.
 - Nunca invente datas, valores, contas ou transações. Se não estiver legível, omita o item.
 - Use categorias curtas em português: Moradia, Alimentação, Transporte, Saúde, Educação, Lazer, Assinaturas, Impostos, Dívidas, Investimentos, Seguros, Transferências, Renda ou Outros.
 - merchant deve ser o nome estável do estabelecimento ou contraparte, sem números de parcela, datas ou identificadores.
@@ -169,6 +272,34 @@ function cleanExtraction(value: ExtractedFinancialDocument) {
         name: item.name.trim().slice(0, 120),
         institution: item.institution.trim().slice(0, 120),
       })),
+    financing: value.financing
+      ? {
+          ...value.financing,
+          contractReference:
+            value.financing.contractReference?.trim().slice(0, 120) || null,
+          description: value.financing.description.trim().slice(0, 240),
+          institution:
+            value.financing.institution?.trim().slice(0, 120) || null,
+          statementDate:
+            value.financing.statementDate &&
+            /^\d{4}-\d{2}-\d{2}$/.test(value.financing.statementDate)
+              ? value.financing.statementDate
+              : null,
+          nextDueDate:
+            value.financing.nextDueDate &&
+            /^\d{4}-\d{2}-\d{2}$/.test(value.financing.nextDueDate)
+              ? value.financing.nextDueDate
+              : null,
+          installments: value.financing.installments
+            .filter(
+              (item) =>
+                item.installmentNumber > 0 &&
+                item.amountCents >= 0 &&
+                /^\d{4}-\d{2}-\d{2}$/.test(item.dueDate),
+            )
+            .sort((left, right) => left.dueDate.localeCompare(right.dueDate)),
+        }
+      : null,
   } satisfies ExtractedFinancialDocument;
 }
 
@@ -254,6 +385,7 @@ async function deterministicExtraction(
     periodEnd: null,
     transactions: items,
     balances: [],
+    financing: null,
   } satisfies ExtractedFinancialDocument;
 }
 

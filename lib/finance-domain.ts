@@ -85,6 +85,35 @@ export type Debt = {
   dueDate: string;
   status: "pending" | "paid" | "overdue";
   category: string;
+  debtType: "other" | "financing";
+  institution: string | null;
+  outstandingCents: number | null;
+  interestRateAnnual: number | null;
+  lastStatementDate: string | null;
+  lastAmortizationCents: number;
+  sourceDocumentId: string | null;
+  installments: DebtInstallment[];
+  snapshots: DebtSnapshot[];
+};
+
+export type DebtInstallment = {
+  id: string;
+  installmentNumber: number;
+  dueDate: string;
+  amountCents: number;
+  principalCents: number | null;
+  interestCents: number | null;
+  feesCents: number | null;
+  remainingBalanceCents: number | null;
+  status: "pending" | "paid" | "overdue" | "partially_paid";
+};
+
+export type DebtSnapshot = {
+  id: string;
+  statementDate: string;
+  outstandingCents: number;
+  amortizationCents: number;
+  sourceDocumentId: string;
 };
 
 export type Goal = {
@@ -105,6 +134,7 @@ export type FinancialDocument = {
   documentType:
     | "bank_statement"
     | "credit_card_invoice"
+    | "financing_statement"
     | "investment_statement"
     | "insurance_statement"
     | "pension_statement"

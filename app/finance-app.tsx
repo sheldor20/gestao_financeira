@@ -75,7 +75,7 @@ const pageCopy: Record<Tab, { eyebrow: string; title: string; subtitle: string }
   debts: {
     eyebrow: "GESTÃO",
     title: "Dívidas",
-    subtitle: "Pagamentos importados podem ser vinculados e reduzem o saldo automaticamente.",
+    subtitle: "Financiamentos, próximas parcelas e amortizações atualizados pelos PDFs.",
   },
   assets: {
     eyebrow: "PATRIMÔNIO",
@@ -92,6 +92,7 @@ const pageCopy: Record<Tab, { eyebrow: string; title: string; subtitle: string }
 const documentLabels = {
   bank_statement: "Extrato bancário",
   credit_card_invoice: "Fatura do cartão",
+  financing_statement: "Financiamento imobiliário",
   investment_statement: "Extrato de investimentos",
   pension_statement: "Extrato de previdência",
   insurance_statement: "Documento de seguro",
@@ -174,6 +175,9 @@ export function FinanceApp({ userEmail }: { userEmail: string }) {
   const [toast, setToast] = useState("");
   const [busy, setBusy] = useState(false);
   const [inviteCode, setInviteCode] = useState("");
+  const [defaultDocumentType, setDefaultDocumentType] = useState<
+    keyof typeof documentLabels
+  >("bank_statement");
   const importFormRef = useRef<HTMLFormElement>(null);
 
   const summary = useMemo(
@@ -215,6 +219,13 @@ export function FinanceApp({ userEmail }: { userEmail: string }) {
     window.setTimeout(() => setToast(""), 4200);
   }
 
+  function openImport(
+    documentType: keyof typeof documentLabels = "bank_statement",
+  ) {
+    setDefaultDocumentType(documentType);
+    setModal("import");
+  }
+
   async function importDocument(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setBusy(true);
@@ -223,7 +234,9 @@ export function FinanceApp({ userEmail }: { userEmail: string }) {
       setModal(null);
       importFormRef.current?.reset();
       notify(
-        `${payload.imported ?? 0} movimentações e ${payload.updatedAccounts ?? 0} saldos aplicados${payload.extractionMode === "ai" ? " pela IA" : " pela leitura básica"}.`,
+        payload.financingUpdated
+          ? `Financiamento atualizado com ${payload.updatedInstallments ?? 0} próximas parcelas.`
+          : `${payload.imported ?? 0} movimentações e ${payload.updatedAccounts ?? 0} saldos aplicados${payload.extractionMode === "ai" ? " pela IA" : " pela leitura básica"}.`,
       );
     } catch (error) {
       notify(error instanceof Error ? error.message : "Falha na importação.");
@@ -354,7 +367,7 @@ export function FinanceApp({ userEmail }: { userEmail: string }) {
                 <UserPlus size={17} /> Convidar
               </button>
             )}
-            <button className="primary-button" onClick={() => setModal("import")}>
+            <button className="primary-button" onClick={() => openImport()}>
               <FileUp size={17} /> Importar PDF
             </button>
             <div className="profile-chip">
@@ -468,19 +481,21 @@ export function FinanceApp({ userEmail }: { userEmail: string }) {
                     </tbody>
                   </table>
                 </div>
-              ) : <EmptyState icon={FileUp} text="Importe os extratos e as faturas deste mês. As movimentações aparecerão aqui automaticamente." action="Importar documento" onAction={() => setModal("import")} />}
+              ) : <EmptyState icon={FileUp} text="Importe os extratos e as faturas deste mês. As movimentações aparecerão aqui automaticamente." action="Importar documento" onAction={() => openImport()} />}
             </section>
           )}
 
           {tab === "debts" && (
             <section className="panel">
-              <div className="panel-heading"><div><span className="eyebrow">{visibleDebts.length} DÍVIDAS</span><h2>Acompanhamento</h2></div><button className="secondary-button" onClick={() => setModal("debt")}><Plus size={17} /> Adicionar dívida</button></div>
+              <div className="panel-heading"><div><span className="eyebrow">{visibleDebts.length} DÍVIDAS</span><h2>Acompanhamento</h2></div><div className="panel-actions"><button className="secondary-button" onClick={() => openImport("financing_statement")}><FileUp size={17} /> Importar financiamento</button><button className="secondary-button" onClick={() => setModal("debt")}><Plus size={17} /> Adicionar manualmente</button></div></div>
               {visibleDebts.length ? <div className="card-list">{visibleDebts.map((debt) => {
-                const paid = Math.min(debt.totalCents, debtPaidCents(debt.id, state.transactions));
+                const importedPaid = Math.min(debt.totalCents, debtPaidCents(debt.id, state.transactions));
+                const outstanding = debt.outstandingCents ?? Math.max(0, debt.totalCents - importedPaid);
+                const paid = Math.max(importedPaid, debt.totalCents - outstanding);
                 const percentage = debt.totalCents ? Math.min(100, (paid / debt.totalCents) * 100) : 0;
                 const payments = state.transactions.filter((item) => item.debtId === debt.id).length;
-                return <article className="progress-card" key={debt.id}><div className="progress-card-top"><div>{ownerBadge(debt.owner)}<h3>{debt.description}</h3><span>{payments} pagamentos importados vinculados</span></div><strong>{money(Math.max(0, debt.totalCents - paid))}<small>restante</small></strong></div><div className="progress-track"><i style={{ width: `${percentage}%` }} /></div><div className="progress-meta"><span>Pago {money(paid)}</span><span>Total {money(debt.totalCents)}</span><span>Vence {dateLabel(debt.dueDate)}</span></div></article>;
-              })}</div> : <EmptyState icon={HandCoins} text="Cadastre uma dívida para conectar os pagamentos encontrados nos extratos." action="Adicionar dívida" onAction={() => setModal("debt")} />}
+                return <article className={`progress-card ${debt.debtType === "financing" ? "financing" : ""}`} key={debt.id}><div className="progress-card-top"><div>{ownerBadge(debt.owner)}<h3>{debt.description}</h3><span>{debt.debtType === "financing" ? `${debt.institution ?? "Instituição não identificada"} · ${debt.snapshots.length} PDF${debt.snapshots.length === 1 ? "" : "s"}` : `${payments} pagamentos importados vinculados`}</span></div><strong>{money(outstanding)}<small>saldo devedor</small></strong></div><div className="progress-track"><i style={{ width: `${percentage}%` }} /></div><div className="progress-meta"><span>Quitado {money(paid)}</span><span>Parcela {debt.installmentCurrent}/{debt.installmentTotal}</span><span>Vence {dateLabel(debt.dueDate)}</span></div>{debt.debtType === "financing" && <div className="financing-update"><span>Atualizado em {dateLabel(debt.lastStatementDate)}</span>{debt.lastAmortizationCents > 0 && <strong>Amortização identificada: {money(debt.lastAmortizationCents)}</strong>}</div>}{debt.installments.length > 0 && <div className="installment-schedule"><div className="schedule-heading"><strong>Próximas parcelas</strong><span>{debt.installments.length} no último PDF</span></div>{debt.installments.slice(0, 8).map((installment) => <div className="schedule-row" key={installment.id}><span><b>{installment.installmentNumber}</b>{dateLabel(installment.dueDate)}</span><span>{installment.principalCents !== null ? `Principal ${money(installment.principalCents)}` : installment.status === "overdue" ? "Em atraso" : "Prevista"}</span><strong>{money(installment.amountCents)}</strong></div>)}</div>}</article>;
+              })}</div> : <EmptyState icon={HandCoins} text="Importe o PDF do financiamento para criar a dívida e listar as próximas parcelas." action="Importar financiamento" onAction={() => openImport("financing_statement")} />}
             </section>
           )}
 
@@ -495,7 +510,7 @@ export function FinanceApp({ userEmail }: { userEmail: string }) {
                 <div className="panel-heading"><div><span className="eyebrow">SALDOS IMPORTADOS</span><h2>Patrimônio por pessoa</h2></div></div>
                 {visibleAccounts.length ? <div className="asset-grid">{visibleAccounts.map((account) => (
                   <article className="asset-card" key={account.id}><div className="asset-icon">{account.type === "insurance" ? <ShieldCheck size={21} /> : account.type === "investment" || account.type === "pension" ? <TrendingUp size={21} /> : <Landmark size={21} />}</div><div className="asset-title"><span>{assetLabels[account.type]}</span><h3>{account.name}</h3><small>{account.institution || "Instituição não identificada"}</small></div>{ownerBadge(account.owner)}<strong>{money(account.balanceCents)}</strong><span className="balance-date">Saldo em {dateLabel(account.balanceDate)}</span></article>
-                ))}</div> : <EmptyState icon={Landmark} text="Importe extratos bancários, de investimentos, previdência ou seguros para formar o patrimônio." action="Importar documento" onAction={() => setModal("import")} />}
+                ))}</div> : <EmptyState icon={Landmark} text="Importe extratos bancários, de investimentos, previdência ou seguros para formar o patrimônio." action="Importar documento" onAction={() => openImport()} />}
               </section>
             </>
           )}
@@ -515,7 +530,7 @@ export function FinanceApp({ userEmail }: { userEmail: string }) {
         </div>
       </section>
 
-      {modal === "import" && <ModalShell title="Importar documento" subtitle="A IA lê o PDF, extrai os dados e aplica as movimentações e saldos." onClose={() => setModal(null)}><form ref={importFormRef} className="modal-form" onSubmit={importDocument}><label><span>Arquivo</span><input type="file" name="file" accept=".pdf,.csv,.txt,application/pdf,text/csv,text/plain" required /></label><div className="form-grid"><label><span>Tipo</span><select name="documentType" defaultValue="bank_statement">{Object.entries(documentLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label><label><span>De quem</span><select name="owner" defaultValue={state.people[0]?.id ?? "joint"}>{state.people.map((person) => <option key={person.id} value={person.id}>{person.name}</option>)}<option value="joint">Grupo</option></select></label><label><span>Período de referência</span><input name="period" type="month" defaultValue={month} required /></label><label><span>Conta relacionada (opcional)</span><select name="accountId" defaultValue=""><option value="">Identificar pelo PDF</option>{state.accounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}</select></label><label><span>Cartão relacionado (opcional)</span><select name="cardId" defaultValue=""><option value="">Identificar pelo PDF</option>{state.cards.map((card) => <option key={card.id} value={card.id}>{card.name}</option>)}</select></label></div><div className="ai-disclosure"><Sparkles size={18} /><span>O arquivo fica em armazenamento privado. A extração por IA ocorre somente no servidor e a chave nunca é enviada ao navegador.</span></div><button className="primary-button modal-submit" disabled={busy}>{busy ? "Lendo e aplicando…" : "Ler e aplicar tudo"}</button></form></ModalShell>}
+      {modal === "import" && <ModalShell title="Importar documento" subtitle="A IA lê o PDF e atualiza movimentações, saldos ou o cronograma do financiamento." onClose={() => setModal(null)}><form ref={importFormRef} className="modal-form" onSubmit={importDocument}><label><span>Arquivo</span><input type="file" name="file" accept=".pdf,.csv,.txt,application/pdf,text/csv,text/plain" required /></label><div className="form-grid"><label><span>Tipo</span><select key={defaultDocumentType} name="documentType" defaultValue={defaultDocumentType}>{Object.entries(documentLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label><label><span>De quem</span><select name="owner" defaultValue={state.people[0]?.id ?? "joint"}>{state.people.map((person) => <option key={person.id} value={person.id}>{person.name}</option>)}<option value="joint">Grupo</option></select></label><label><span>Período de referência</span><input name="period" type="month" defaultValue={month} required /></label><label><span>Conta relacionada (opcional)</span><select name="accountId" defaultValue=""><option value="">Identificar pelo PDF</option>{state.accounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}</select></label><label><span>Cartão relacionado (opcional)</span><select name="cardId" defaultValue=""><option value="">Identificar pelo PDF</option>{state.cards.map((card) => <option key={card.id} value={card.id}>{card.name}</option>)}</select></label></div><div className="ai-disclosure"><Sparkles size={18} /><span>Ao importar novamente o mesmo contrato, o saldo e as próximas parcelas são atualizados sem criar outra dívida. Amortizações explícitas ficam registradas no histórico.</span></div><button className="primary-button modal-submit" disabled={busy}>{busy ? "Lendo e aplicando…" : "Ler e aplicar tudo"}</button></form></ModalShell>}
 
       {modal === "debt" && <ModalShell title="Adicionar dívida" subtitle="Depois vincule os pagamentos importados na tabela de entradas e saídas." onClose={() => setModal(null)}><form className="modal-form" onSubmit={addDebt}><label><span>Descrição</span><input name="description" required placeholder="Ex.: Financiamento do carro" /></label><div className="form-grid"><OwnerSelect people={state.people} /><label><span>Valor total</span><input name="total" required placeholder="0,00" inputMode="decimal" /></label><label><span>Valor da parcela</span><input name="installment" required placeholder="0,00" inputMode="decimal" /></label><label><span>Parcela atual</span><input name="current" type="number" min="1" defaultValue="1" required /></label><label><span>Total de parcelas</span><input name="installments" type="number" min="1" defaultValue="1" required /></label><label><span>Próximo vencimento</span><input name="dueDate" type="date" required /></label></div><button className="primary-button modal-submit" disabled={busy}>{busy ? "Salvando…" : "Salvar dívida"}</button></form></ModalShell>}
 
