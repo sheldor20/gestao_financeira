@@ -132,7 +132,7 @@ export function useFinanceStore() {
         .from("household_members")
         .select("id, person_key, display_name, role")
         .eq("household_id", householdId)
-        .eq("status", "active")
+        .in("status", ["active", "invited"])
         .order("created_at"),
       supabase
         .from("transactions")
