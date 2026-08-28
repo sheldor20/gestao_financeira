@@ -138,8 +138,7 @@ export function useFinanceStore() {
         .from("financial_documents")
         .select("*")
         .eq("household_id", householdId)
-        .order("created_at", { ascending: false })
-        .limit(20),
+        .order("created_at", { ascending: false }),
     ]);
 
     const queryError = firstError([
@@ -415,6 +414,25 @@ export function useFinanceStore() {
     return payload;
   }
 
+  async function deleteDocument(documentId: string) {
+    const response = await fetch(
+      `/api/documents/${encodeURIComponent(documentId)}`,
+      { method: "DELETE" },
+    );
+    const payload = (await response.json()) as {
+      error?: string;
+      deletedTransactions?: number;
+      deletedInvoices?: number;
+      deletedInstallments?: number;
+      deletedDebts?: number;
+    };
+    if (!response.ok) {
+      throw new Error(payload.error ?? "Falha ao excluir o documento.");
+    }
+    await refresh();
+    return payload;
+  }
+
   async function createInvite() {
     const { data, error: inviteError } = await supabase.rpc(
       "create_household_invite",
@@ -436,6 +454,7 @@ export function useFinanceStore() {
     linkGoal: (transactionId: string, goalId: string | null) =>
       linkTransaction(transactionId, "goal_id", goalId),
     importDocument,
+    deleteDocument,
     createInvite,
     signOut: () => supabase.auth.signOut(),
   };

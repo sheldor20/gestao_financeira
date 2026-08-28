@@ -22,6 +22,7 @@ import {
   ShieldCheck,
   Sparkles,
   Target,
+  Trash2,
   TrendingUp,
   UserPlus,
   WalletCards,
@@ -33,6 +34,7 @@ import { useRouter } from "next/navigation";
 import {
   accountTotals,
   debtPaidCents,
+  documentTransactionCount,
   expenseByCategory,
   goalSavedCents,
   matchesScope,
@@ -175,6 +177,7 @@ export function FinanceApp({ userEmail }: { userEmail: string }) {
   const [toast, setToast] = useState("");
   const [busy, setBusy] = useState(false);
   const [inviteCode, setInviteCode] = useState("");
+  const [deletingDocumentId, setDeletingDocumentId] = useState("");
   const [defaultDocumentType, setDefaultDocumentType] = useState<
     keyof typeof documentLabels
   >("bank_statement");
@@ -265,6 +268,31 @@ export function FinanceApp({ userEmail }: { userEmail: string }) {
       notify(error instanceof Error ? error.message : "Falha ao salvar a dívida.");
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function deleteDocument(documentId: string, filename: string) {
+    const chargeCount = documentTransactionCount(documentId, state.transactions);
+    const chargeCopy = `${chargeCount} ${chargeCount === 1 ? "lançamento vinculado" : "lançamentos vinculados"}`;
+    if (
+      !window.confirm(
+        `Excluir “${filename}” e ${chargeCopy}? Essa ação não pode ser desfeita.`,
+      )
+    ) {
+      return;
+    }
+
+    setDeletingDocumentId(documentId);
+    try {
+      const result = await store.deleteDocument(documentId);
+      const deletedCharges = result.deletedTransactions ?? chargeCount;
+      notify(
+        `Documento excluído com ${deletedCharges} ${deletedCharges === 1 ? "lançamento" : "lançamentos"}.`,
+      );
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "Falha ao excluir o documento.");
+    } finally {
+      setDeletingDocumentId("");
     }
   }
 
@@ -435,10 +463,10 @@ export function FinanceApp({ userEmail }: { userEmail: string }) {
                   )) : <EmptyState compact text="Importe um extrato ou uma fatura para ver as categorias." />}
                 </section>
                 <section className="panel">
-                  <div className="panel-heading"><div><span className="eyebrow">ÚLTIMOS ARQUIVOS</span><h2>Documentos aplicados</h2></div></div>
-                  {state.documents.length ? state.documents.slice(0, 4).map((document) => (
-                    <div className="compact-row" key={document.id}><FileText size={18} /><div><strong>{document.filename}</strong><span>{documentLabels[document.documentType]} · {document.itemCount} itens</span></div><span className={`status-badge ${document.status}`}>{document.status === "applied" ? "Aplicado" : document.status}</span></div>
-                  )) : <EmptyState compact text="Nenhum documento importado ainda." />}
+                  <div className="panel-heading"><div><span className="eyebrow">ARQUIVOS</span><h2>Documentos importados</h2></div></div>
+                  {state.documents.length ? <div className="document-list">{state.documents.map((document) => (
+                    <div className="compact-row document-row" key={document.id}><FileText size={18} /><div><strong>{document.filename}</strong><span>{documentLabels[document.documentType]} · {document.itemCount} itens</span></div><span className={`status-badge ${document.status}`}>{document.status === "applied" ? "Aplicado" : document.status}</span><button className="document-delete" type="button" disabled={deletingDocumentId === document.id} aria-label={`Excluir ${document.filename}`} title="Excluir documento e lançamentos" onClick={() => void deleteDocument(document.id, document.filename)}>{deletingDocumentId === document.id ? <RefreshCw className="spin" size={15} /> : <Trash2 size={15} />}</button></div>
+                  ))}</div> : <EmptyState compact text="Nenhum documento importado ainda." />}
                 </section>
               </div>
             </>
