@@ -547,6 +547,40 @@ export function debtPaidCents(debtId: string, transactions: Transaction[]) {
     .reduce((sum, item) => sum + item.amountCents, 0);
 }
 
+export function debtOutstandingCents(
+  debt: Debt,
+  transactions: Transaction[],
+) {
+  if (debt.status === "paid") return 0;
+  if (debt.debtType === "financing" && debt.installments.length) {
+    return openInstallmentsTotalCents(debt);
+  }
+  if (debt.outstandingCents !== null) return debt.outstandingCents;
+  return Math.max(0, debt.totalCents - debtPaidCents(debt.id, transactions));
+}
+
+export function debtTotalsByOwner(
+  debts: Debt[],
+  transactions: Transaction[],
+) {
+  return debts.reduce(
+    (totals, debt) => {
+      const outstanding = debtOutstandingCents(debt, transactions);
+      totals.consolidatedCents += outstanding;
+      if (debt.owner === "kim") totals.kimCents += outstanding;
+      if (debt.owner === "alexandre") totals.alexandreCents += outstanding;
+      if (debt.owner === "joint") totals.jointCents += outstanding;
+      return totals;
+    },
+    {
+      consolidatedCents: 0,
+      kimCents: 0,
+      alexandreCents: 0,
+      jointCents: 0,
+    },
+  );
+}
+
 export function goalSavedCents(goalId: string, transactions: Transaction[]) {
   return transactions
     .filter(

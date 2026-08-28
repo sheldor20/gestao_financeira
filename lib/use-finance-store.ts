@@ -402,6 +402,35 @@ export function useFinanceStore() {
     return () => window.clearTimeout(refreshTask);
   }, [refresh]);
 
+  async function addAsset(
+    input: Pick<
+      Asset,
+      "owner" | "name" | "type" | "totalValueCents" | "valuationDate" | "institution"
+    >,
+  ) {
+    if (input.totalValueCents <= 0) {
+      throw new Error("Informe um valor maior que zero para o patrimônio.");
+    }
+    const { error: insertError } = await supabase.from("assets").insert({
+      household_id: state.householdId,
+      ...ownerColumnsForSelection(
+        input.owner,
+        state.people.map((member) => ({
+          personKey: member.id,
+          memberId: member.memberId,
+        })),
+      ),
+      name: input.name.trim(),
+      asset_type: input.type,
+      total_value_cents: input.totalValueCents,
+      valuation_date: input.valuationDate,
+      value_source: "document",
+      institution: input.institution?.trim() || null,
+    });
+    if (insertError) throw insertError;
+    await refresh();
+  }
+
   async function addDebt(
     input: Pick<
       Debt,
@@ -527,6 +556,7 @@ export function useFinanceStore() {
     loading,
     error,
     refresh,
+    addAsset,
     addDebt,
     addGoal,
     linkDebt: (transactionId: string, debtId: string | null) =>

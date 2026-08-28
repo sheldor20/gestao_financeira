@@ -5,6 +5,7 @@ import {
   ArrowUpRight,
   Banknote,
   Building2,
+  CarFront,
   CheckCircle2,
   ChevronDown,
   CircleDollarSign,
@@ -17,6 +18,7 @@ import {
   LogOut,
   Menu,
   PiggyBank,
+  Package,
   Plus,
   RefreshCw,
   Search,
@@ -25,6 +27,8 @@ import {
   Target,
   Trash2,
   TrendingUp,
+  UserRound,
+  UsersRound,
   UserPlus,
   WalletCards,
   X,
@@ -35,6 +39,8 @@ import { useRouter } from "next/navigation";
 import {
   accountTotals,
   debtPaidCents,
+  debtOutstandingCents,
+  debtTotalsByOwner,
   documentTransactionCount,
   expenseByCategory,
   goalSavedCents,
@@ -42,10 +48,10 @@ import {
   matchesScope,
   monthlyIncomeByPerson,
   monthlySummary,
-  openInstallmentsTotalCents,
   transactionsWithDebtInstallments,
   transactionsWithInvoiceDetails,
   type Account,
+  type Asset,
   type FinancialDocument,
   type Owner,
   type Scope,
@@ -55,7 +61,7 @@ import { ownerSelectionOptions } from "@/lib/owner-selection";
 import { useFinanceStore } from "@/lib/use-finance-store";
 
 type Tab = "overview" | "transactions" | "debts" | "assets" | "planning";
-type Modal = "import" | "debt" | "goal" | "invite" | null;
+type Modal = "import" | "asset" | "debt" | "goal" | "invite" | null;
 
 const brl = new Intl.NumberFormat("pt-BR", {
   style: "currency",
@@ -89,7 +95,7 @@ const pageCopy: Record<Tab, { eyebrow: string; title: string; subtitle: string }
   assets: {
     eyebrow: "PATRIMÔNIO",
     title: "Bens e reservas",
-    subtitle: "Contas, imóveis, investimentos, previdência e seguros extraídos dos documentos.",
+    subtitle: "Contas, imóveis, veículos e outros bens importados ou cadastrados manualmente.",
   },
   planning: {
     eyebrow: "PLANEJAMENTO",
@@ -125,6 +131,12 @@ const assetValueLabels = {
   document: "Valor informado no documento",
 };
 
+const assetTypeLabels: Record<Asset["type"], string> = {
+  real_estate: "Imóvel",
+  vehicle: "Veículo",
+  other: "Outro bem",
+};
+
 function money(cents: number) {
   return brl.format(cents / 100);
 }
@@ -150,6 +162,12 @@ function ownerBadge(owner: Owner) {
       {ownerLabel(owner)}
     </span>
   );
+}
+
+function assetIcon(type: Asset["type"]) {
+  if (type === "vehicle") return <CarFront size={21} />;
+  if (type === "other") return <Package size={21} />;
+  return <Building2 size={21} />;
 }
 
 function dateLabel(date: string | null) {
@@ -244,6 +262,10 @@ export function FinanceApp({ userEmail }: { userEmail: string }) {
     matchesScope(item.owner, scope),
   );
   const totals = accountTotals(state.accounts, scope, state.assets);
+  const debtTotals = useMemo(
+    () => debtTotalsByOwner(state.debts, state.transactions),
+    [state.debts, state.transactions],
+  );
   const fixedExpenses = summary.cashflow.filter(
     (item) => item.kind === "expense" && item.isFixedRecurring,
   );
@@ -300,6 +322,28 @@ export function FinanceApp({ userEmail }: { userEmail: string }) {
       notify("Dívida adicionada. Os pagamentos poderão ser vinculados na tabela.");
     } catch (error) {
       notify(error instanceof Error ? error.message : "Falha ao salvar a dívida.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function addAsset(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setBusy(true);
+    const data = new FormData(event.currentTarget);
+    try {
+      await store.addAsset({
+        owner: String(data.get("owner")) as Owner,
+        name: String(data.get("name")),
+        type: String(data.get("type")) as Asset["type"],
+        totalValueCents: cents(data.get("value")),
+        valuationDate: String(data.get("valuationDate")) || null,
+        institution: String(data.get("institution")) || null,
+      });
+      setModal(null);
+      notify("Patrimônio adicionado com sucesso.");
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "Falha ao salvar o patrimônio.");
     } finally {
       setBusy(false);
     }
@@ -551,14 +595,17 @@ export function FinanceApp({ userEmail }: { userEmail: string }) {
           )}
 
           {tab === "debts" && (
-            <section className="panel">
+            <>
+              <div className="metric-grid three debt-summary-grid">
+                <Metric icon={UsersRound} label="Total devido" value={money(debtTotals.consolidatedCents)} tone="purple" note={debtTotals.jointCents ? `Inclui ${money(debtTotals.jointCents)} do Grupo` : "Todas as dívidas abertas"} />
+                <Metric icon={UserRound} label="Devido por Kim" value={money(debtTotals.kimCents)} tone="blue" note="Dívidas individuais de Kim" />
+                <Metric icon={UserRound} label="Devido por Ale" value={money(debtTotals.alexandreCents)} tone="coral" note="Dívidas individuais de Ale" />
+              </div>
+              <section className="panel">
               <div className="panel-heading"><div><span className="eyebrow">{visibleDebts.length} DÍVIDAS</span><h2>Acompanhamento</h2></div><div className="panel-actions"><button className="secondary-button" onClick={() => openImport("financing_statement")}><FileUp size={17} /> Importar financiamento</button><button className="secondary-button" onClick={() => setModal("debt")}><Plus size={17} /> Adicionar manualmente</button></div></div>
               {visibleDebts.length ? <div className="card-list">{visibleDebts.map((debt) => {
                 const importedPaid = Math.min(debt.totalCents, debtPaidCents(debt.id, state.transactions));
-                const openInstallmentsCents = openInstallmentsTotalCents(debt);
-                const outstanding = debt.debtType === "financing" && debt.installments.length
-                  ? openInstallmentsCents
-                  : debt.outstandingCents ?? Math.max(0, debt.totalCents - importedPaid);
+                const outstanding = debtOutstandingCents(debt, state.transactions);
                 const paid = Math.max(importedPaid, debt.totalCents - outstanding);
                 const percentage = debt.debtType === "financing"
                   ? Math.min(100, (Math.max(0, debt.installmentCurrent - 1) / debt.installmentTotal) * 100)
@@ -566,7 +613,8 @@ export function FinanceApp({ userEmail }: { userEmail: string }) {
                 const payments = state.transactions.filter((item) => item.debtId === debt.id).length;
                 return <article className={`progress-card ${debt.debtType === "financing" ? "financing" : ""}`} key={debt.id}><div className="progress-card-top"><div>{ownerBadge(debt.owner)}<h3>{debt.description}</h3><span>{debt.debtType === "financing" ? `${debt.institution ?? "Instituição não identificada"} · ${debt.snapshots.length} PDF${debt.snapshots.length === 1 ? "" : "s"}` : `${payments} pagamentos importados vinculados`}</span></div><strong>{money(outstanding)}<small>{debt.debtType === "financing" ? "total das parcelas abertas" : "saldo devedor"}</small></strong></div><div className="progress-track"><i style={{ width: `${percentage}%` }} /></div><div className="progress-meta"><span>{debt.debtType === "financing" ? `${debt.installments.length} parcelas abertas` : `Quitado ${money(paid)}`}</span><span>Parcela {debt.installmentCurrent}/{debt.installmentTotal}</span><span>Vence {dateLabel(debt.dueDate)}</span></div>{debt.debtType === "financing" && <div className="financing-update"><span>Atualizado em {dateLabel(debt.lastStatementDate)}</span>{debt.lastAmortizationCents > 0 && <strong>Amortização identificada: {money(debt.lastAmortizationCents)}</strong>}</div>}{debt.installments.length > 0 && <div className="installment-schedule"><div className="schedule-heading"><strong>Próximas parcelas</strong><span>{debt.installments.length} no último PDF</span></div>{debt.installments.slice(0, 8).map((installment) => <div className="schedule-row" key={installment.id}><span><b>{installment.installmentNumber}</b>{dateLabel(installment.dueDate)}</span><span>{installment.principalCents !== null ? `Principal ${money(installment.principalCents)}` : installment.status === "overdue" ? "Em atraso" : "Prevista"}</span><strong>{money(installment.amountCents)}</strong></div>)}</div>}</article>;
               })}</div> : <EmptyState icon={HandCoins} text="Importe o PDF do financiamento para criar a dívida e listar as próximas parcelas." action="Importar financiamento" onAction={() => openImport("financing_statement")} />}
-            </section>
+              </section>
+            </>
           )}
 
           {tab === "assets" && (
@@ -577,12 +625,12 @@ export function FinanceApp({ userEmail }: { userEmail: string }) {
                 <Metric icon={TrendingUp} label="Contas e bens" value={String(visibleAccounts.length + visibleAssets.length)} tone="green" note="Com valor atualizado" />
               </div>
               <section className="panel">
-                <div className="panel-heading"><div><span className="eyebrow">BENS E SALDOS IMPORTADOS</span><h2>Patrimônio por pessoa</h2></div></div>
+                <div className="panel-heading"><div><span className="eyebrow">BENS E SALDOS</span><h2>Patrimônio por pessoa</h2></div><div className="panel-actions"><button className="secondary-button" onClick={() => setModal("asset")}><Plus size={17} /> Adicionar patrimônio</button></div></div>
                 {visibleAccounts.length || visibleAssets.length ? <div className="asset-grid">{visibleAssets.map((asset) => (
-                  <article className="asset-card financed-asset" key={asset.id}><div className="asset-icon"><Building2 size={21} /></div><div className="asset-title"><span>{asset.type === "real_estate" ? "Imóvel" : "Bem"}</span><h3>{asset.name}</h3><small>{asset.institution || "Extraído do financiamento"}</small></div>{ownerBadge(asset.owner)}<strong>{money(asset.totalValueCents)}</strong><span className="balance-date">{assetValueLabels[asset.valueSource]} · {dateLabel(asset.valuationDate)}</span></article>
+                  <article className={`asset-card ${asset.debtId ? "financed-asset" : "manual-asset"}`} key={asset.id}><div className="asset-icon">{assetIcon(asset.type)}</div><div className="asset-title"><span>{assetTypeLabels[asset.type]}</span><h3>{asset.name}</h3><small>{asset.institution || (asset.debtId ? "Extraído do financiamento" : "Cadastro manual")}</small></div>{ownerBadge(asset.owner)}<strong>{money(asset.totalValueCents)}</strong><span className="balance-date">{asset.sourceDocumentId || asset.debtId ? assetValueLabels[asset.valueSource] : "Valor informado manualmente"} · {dateLabel(asset.valuationDate)}</span></article>
                 ))}{visibleAccounts.map((account) => (
                   <article className="asset-card" key={account.id}><div className="asset-icon">{account.type === "insurance" ? <ShieldCheck size={21} /> : account.type === "investment" || account.type === "pension" ? <TrendingUp size={21} /> : <Landmark size={21} />}</div><div className="asset-title"><span>{assetLabels[account.type]}</span><h3>{account.name}</h3><small>{account.institution || "Instituição não identificada"}</small></div>{ownerBadge(account.owner)}<strong>{money(account.balanceCents)}</strong><span className="balance-date">Saldo em {dateLabel(account.balanceDate)}</span></article>
-                ))}</div> : <EmptyState icon={Landmark} text="Importe extratos ou o PDF do financiamento para formar o patrimônio." action="Importar documento" onAction={() => openImport()} />}
+                ))}</div> : <EmptyState icon={Landmark} text="Adicione um bem manualmente ou importe documentos para formar o patrimônio." action="Adicionar patrimônio" onAction={() => setModal("asset")} />}
               </section>
             </>
           )}
@@ -605,6 +653,8 @@ export function FinanceApp({ userEmail }: { userEmail: string }) {
       {modal === "import" && <ModalShell title="Importar documento" subtitle="Kim ou Ale podem importar qualquer documento: escolha abaixo a quem ele pertence." onClose={() => setModal(null)}><form ref={importFormRef} className="modal-form" onSubmit={importDocument}><label><span>Arquivo</span><input type="file" name="file" accept=".pdf,.csv,.txt,application/pdf,text/csv,text/plain" required /></label><div className="form-grid"><OwnerSelect label="De quem é o documento?" requireChoice /><label><span>Tipo</span><select key={defaultDocumentType} name="documentType" defaultValue={defaultDocumentType}>{Object.entries(documentLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label><label><span>Período de referência</span><input name="period" type="month" defaultValue={month} required /></label><label><span>Conta relacionada (opcional)</span><select name="accountId" defaultValue=""><option value="">Identificar pelo PDF</option>{state.accounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}</select></label><label><span>Cartão relacionado (opcional)</span><select name="cardId" defaultValue=""><option value="">Identificar pelo PDF</option>{state.cards.map((card) => <option key={card.id} value={card.id}>{card.name}</option>)}</select></label></div><div className="ai-disclosure"><Sparkles size={18} /><span>A pessoa conectada não altera a titularidade escolhida. Kim, Grupo e Ale podem receber extratos, faturas, financiamentos e demais documentos importados.</span></div><button className="primary-button modal-submit" disabled={busy}>{busy ? "Lendo e aplicando…" : "Ler e aplicar tudo"}</button></form></ModalShell>}
 
       {pendingDocumentDelete && <ModalShell title="Excluir documento e lançamentos?" subtitle="A exclusão remove o arquivo e tudo que foi criado a partir dele." onClose={() => !deletingDocumentId && setPendingDocumentDelete(null)}><div className="delete-document-confirmation"><div className="delete-document-file"><span><FileText size={21} /></span><div><strong>{pendingDocumentDelete.filename}</strong><small>{documentLabels[pendingDocumentDelete.documentType]}</small></div></div><div className="delete-document-warning"><Trash2 size={18} /><p>Serão removidos permanentemente <strong>{documentTransactionCount(pendingDocumentDelete.id, transactions)} lançamentos e parcelas vinculados</strong>, além de faturas originadas deste PDF. Essa ação não pode ser desfeita.</p></div><footer><button className="secondary-button" type="button" disabled={Boolean(deletingDocumentId)} onClick={() => setPendingDocumentDelete(null)}>Cancelar</button><button className="delete-confirm-button" type="button" disabled={Boolean(deletingDocumentId)} onClick={() => void deleteDocument()}>{deletingDocumentId ? <RefreshCw className="spin" size={16} /> : <Trash2 size={16} />}{deletingDocumentId ? "Excluindo…" : "Excluir tudo"}</button></footer></div></ModalShell>}
+
+      {modal === "asset" && <ModalShell title="Adicionar patrimônio" subtitle="Cadastre um imóvel, veículo ou outro bem e escolha a quem ele pertence." onClose={() => setModal(null)}><form className="modal-form" onSubmit={addAsset}><label><span>Nome do patrimônio</span><input name="name" required placeholder="Ex.: Apartamento, carro ou terreno" /></label><div className="form-grid"><OwnerSelect label="De quem é o patrimônio?" requireChoice /><label><span>Tipo de bem</span><select name="type" defaultValue="real_estate" required>{Object.entries(assetTypeLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label><label><span>Valor atual</span><input name="value" required placeholder="0,00" inputMode="decimal" /></label><label><span>Data da avaliação</span><input name="valuationDate" type="date" defaultValue={new Date().toISOString().slice(0, 10)} required /></label><label><span>Instituição ou referência (opcional)</span><input name="institution" placeholder="Ex.: Itaú, matrícula ou localização" /></label></div><button className="primary-button modal-submit" disabled={busy}>{busy ? "Salvando…" : "Salvar patrimônio"}</button></form></ModalShell>}
 
       {modal === "debt" && <ModalShell title="Adicionar dívida" subtitle="Depois vincule os pagamentos importados na tabela de entradas e saídas." onClose={() => setModal(null)}><form className="modal-form" onSubmit={addDebt}><label><span>Descrição</span><input name="description" required placeholder="Ex.: Financiamento do carro" /></label><div className="form-grid"><OwnerSelect /><label><span>Valor total</span><input name="total" required placeholder="0,00" inputMode="decimal" /></label><label><span>Valor da parcela</span><input name="installment" required placeholder="0,00" inputMode="decimal" /></label><label><span>Parcela atual</span><input name="current" type="number" min="1" defaultValue="1" required /></label><label><span>Total de parcelas</span><input name="installments" type="number" min="1" defaultValue="1" required /></label><label><span>Próximo vencimento</span><input name="dueDate" type="date" required /></label></div><button className="primary-button modal-submit" disabled={busy}>{busy ? "Salvando…" : "Salvar dívida"}</button></form></ModalShell>}
 
