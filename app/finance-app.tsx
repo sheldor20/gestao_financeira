@@ -270,7 +270,7 @@ export function FinanceApp({ userEmail }: { userEmail: string }) {
       importFormRef.current?.reset();
       notify(
         payload.financingUpdated
-          ? `Financiamento e ${payload.assetUpdated ? "bem financiado" : "cronograma"} atualizados, com ${payload.updatedInstallments ?? 0} próximas parcelas.`
+          ? `${payload.financingCount ?? 1} ${(payload.financingCount ?? 1) === 1 ? "dívida atualizada" : "dívidas atualizadas"}, com ${payload.updatedInstallments ?? 0} parcelas lidas${payload.assetUpdated ? " e patrimônio financiado identificado" : ""}.`
           : payload.invoiceTotalCents
             ? `Fatura de ${money(payload.invoiceTotalCents)} aplicada como saída, com ${payload.invoiceItems ?? 0} itens detalhados.`
           : `${payload.imported ?? 0} movimentações e ${payload.updatedAccounts ?? 0} saldos aplicados${payload.extractionMode === "ai" ? " pela IA" : " pela leitura básica"}.`,

@@ -16,7 +16,7 @@ Operação: Implantacao de contrato - Esteira Data: 30/03/2022 Valor da Operaç�
 
 test("lê todas as parcelas não pagas do DDC do Itaú", () => {
   const document = parseDdcFinancingDocument(ddcText);
-  const financing = document?.financing;
+  const financing = document?.financings[0];
 
   assert.ok(financing);
   assert.equal(document?.institution, "Itaú");
