@@ -41,6 +41,7 @@ import {
   monthlyIncomeByPerson,
   monthlySummary,
   type Account,
+  type FinancialDocument,
   type Owner,
   type Scope,
   type Transaction,
@@ -178,6 +179,8 @@ export function FinanceApp({ userEmail }: { userEmail: string }) {
   const [busy, setBusy] = useState(false);
   const [inviteCode, setInviteCode] = useState("");
   const [deletingDocumentId, setDeletingDocumentId] = useState("");
+  const [pendingDocumentDelete, setPendingDocumentDelete] =
+    useState<FinancialDocument | null>(null);
   const [defaultDocumentType, setDefaultDocumentType] = useState<
     keyof typeof documentLabels
   >("bank_statement");
@@ -271,21 +274,17 @@ export function FinanceApp({ userEmail }: { userEmail: string }) {
     }
   }
 
-  async function deleteDocument(documentId: string, filename: string) {
-    const chargeCount = documentTransactionCount(documentId, state.transactions);
-    const chargeCopy = `${chargeCount} ${chargeCount === 1 ? "lançamento vinculado" : "lançamentos vinculados"}`;
-    if (
-      !window.confirm(
-        `Excluir “${filename}” e ${chargeCopy}? Essa ação não pode ser desfeita.`,
-      )
-    ) {
-      return;
-    }
-
-    setDeletingDocumentId(documentId);
+  async function deleteDocument() {
+    if (!pendingDocumentDelete) return;
+    const chargeCount = documentTransactionCount(
+      pendingDocumentDelete.id,
+      state.transactions,
+    );
+    setDeletingDocumentId(pendingDocumentDelete.id);
     try {
-      const result = await store.deleteDocument(documentId);
+      const result = await store.deleteDocument(pendingDocumentDelete.id);
       const deletedCharges = result.deletedTransactions ?? chargeCount;
+      setPendingDocumentDelete(null);
       notify(
         `Documento excluído com ${deletedCharges} ${deletedCharges === 1 ? "lançamento" : "lançamentos"}.`,
       );
@@ -465,7 +464,7 @@ export function FinanceApp({ userEmail }: { userEmail: string }) {
                 <section className="panel">
                   <div className="panel-heading"><div><span className="eyebrow">ARQUIVOS</span><h2>Documentos importados</h2></div></div>
                   {state.documents.length ? <div className="document-list">{state.documents.map((document) => (
-                    <div className="compact-row document-row" key={document.id}><FileText size={18} /><div><strong>{document.filename}</strong><span>{documentLabels[document.documentType]} · {document.itemCount} itens</span></div><span className={`status-badge ${document.status}`}>{document.status === "applied" ? "Aplicado" : document.status}</span><button className="document-delete" type="button" disabled={deletingDocumentId === document.id} aria-label={`Excluir ${document.filename}`} title="Excluir documento e lançamentos" onClick={() => void deleteDocument(document.id, document.filename)}>{deletingDocumentId === document.id ? <RefreshCw className="spin" size={15} /> : <Trash2 size={15} />}</button></div>
+                    <div className="compact-row document-row" key={document.id}><FileText size={18} /><div><strong>{document.filename}</strong><span>{documentLabels[document.documentType]} · {document.itemCount} itens</span></div><span className={`status-badge ${document.status}`}>{document.status === "applied" ? "Aplicado" : document.status}</span><button className="document-delete" type="button" disabled={deletingDocumentId === document.id} aria-label={`Excluir ${document.filename}`} onClick={() => setPendingDocumentDelete(document)}>{deletingDocumentId === document.id ? <RefreshCw className="spin" size={15} /> : <Trash2 size={15} />}<span>Excluir</span></button></div>
                   ))}</div> : <EmptyState compact text="Nenhum documento importado ainda." />}
                 </section>
               </div>
@@ -559,6 +558,8 @@ export function FinanceApp({ userEmail }: { userEmail: string }) {
       </section>
 
       {modal === "import" && <ModalShell title="Importar documento" subtitle="A IA lê o PDF e atualiza movimentações, saldos ou o cronograma do financiamento." onClose={() => setModal(null)}><form ref={importFormRef} className="modal-form" onSubmit={importDocument}><label><span>Arquivo</span><input type="file" name="file" accept=".pdf,.csv,.txt,application/pdf,text/csv,text/plain" required /></label><div className="form-grid"><label><span>Tipo</span><select key={defaultDocumentType} name="documentType" defaultValue={defaultDocumentType}>{Object.entries(documentLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label><label><span>De quem</span><select name="owner" defaultValue={state.people[0]?.id ?? "joint"}>{state.people.map((person) => <option key={person.id} value={person.id}>{person.name}</option>)}<option value="joint">Grupo</option></select></label><label><span>Período de referência</span><input name="period" type="month" defaultValue={month} required /></label><label><span>Conta relacionada (opcional)</span><select name="accountId" defaultValue=""><option value="">Identificar pelo PDF</option>{state.accounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}</select></label><label><span>Cartão relacionado (opcional)</span><select name="cardId" defaultValue=""><option value="">Identificar pelo PDF</option>{state.cards.map((card) => <option key={card.id} value={card.id}>{card.name}</option>)}</select></label></div><div className="ai-disclosure"><Sparkles size={18} /><span>Ao importar novamente o mesmo contrato, o saldo e as próximas parcelas são atualizados sem criar outra dívida. Amortizações explícitas ficam registradas no histórico.</span></div><button className="primary-button modal-submit" disabled={busy}>{busy ? "Lendo e aplicando…" : "Ler e aplicar tudo"}</button></form></ModalShell>}
+
+      {pendingDocumentDelete && <ModalShell title="Excluir documento e lançamentos?" subtitle="A exclusão remove o arquivo e tudo que foi criado a partir dele." onClose={() => !deletingDocumentId && setPendingDocumentDelete(null)}><div className="delete-document-confirmation"><div className="delete-document-file"><span><FileText size={21} /></span><div><strong>{pendingDocumentDelete.filename}</strong><small>{documentLabels[pendingDocumentDelete.documentType]}</small></div></div><div className="delete-document-warning"><Trash2 size={18} /><p>Serão removidos permanentemente <strong>{documentTransactionCount(pendingDocumentDelete.id, state.transactions)} lançamentos vinculados</strong>, além de faturas e parcelas originadas deste PDF. Essa ação não pode ser desfeita.</p></div><footer><button className="secondary-button" type="button" disabled={Boolean(deletingDocumentId)} onClick={() => setPendingDocumentDelete(null)}>Cancelar</button><button className="delete-confirm-button" type="button" disabled={Boolean(deletingDocumentId)} onClick={() => void deleteDocument()}>{deletingDocumentId ? <RefreshCw className="spin" size={16} /> : <Trash2 size={16} />}{deletingDocumentId ? "Excluindo…" : "Excluir tudo"}</button></footer></div></ModalShell>}
 
       {modal === "debt" && <ModalShell title="Adicionar dívida" subtitle="Depois vincule os pagamentos importados na tabela de entradas e saídas." onClose={() => setModal(null)}><form className="modal-form" onSubmit={addDebt}><label><span>Descrição</span><input name="description" required placeholder="Ex.: Financiamento do carro" /></label><div className="form-grid"><OwnerSelect people={state.people} /><label><span>Valor total</span><input name="total" required placeholder="0,00" inputMode="decimal" /></label><label><span>Valor da parcela</span><input name="installment" required placeholder="0,00" inputMode="decimal" /></label><label><span>Parcela atual</span><input name="current" type="number" min="1" defaultValue="1" required /></label><label><span>Total de parcelas</span><input name="installments" type="number" min="1" defaultValue="1" required /></label><label><span>Próximo vencimento</span><input name="dueDate" type="date" required /></label></div><button className="primary-button modal-submit" disabled={busy}>{busy ? "Salvando…" : "Salvar dívida"}</button></form></ModalShell>}
 
