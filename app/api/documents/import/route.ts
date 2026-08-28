@@ -7,7 +7,11 @@ import {
 } from "@/app/lib/document-extractor";
 import { financingContractKey } from "@/lib/financing";
 import { normalizeFinancialDocumentContentType } from "@/lib/document-upload";
-import { normalizeMerchant, type Owner } from "@/lib/finance-domain";
+import {
+  isNonAssetBalanceName,
+  normalizeMerchant,
+  type Owner,
+} from "@/lib/finance-domain";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
@@ -62,6 +66,8 @@ function financingRow(
   const description =
     financing.description ||
     `Financiamento ${financing.institution ?? "imobiliário"}`;
+  const assetValueCents =
+    financing.assetValueCents ?? financing.originalAmountCents;
 
   return {
     ...ownerData,
@@ -83,6 +89,16 @@ function financingRow(
     statement_date: statementDate,
     interest_rate_annual: financing.interestRateAnnualPercent,
     amortization_cents: financing.explicitAmortizationCents ?? 0,
+    asset:
+      assetValueCents && assetValueCents > 0
+        ? {
+            name: financing.assetDescription || "Apartamento financiado",
+            asset_type: "real_estate",
+            total_value_cents: assetValueCents,
+            valuation_date: statementDate,
+            value_source: financing.assetValueSource ?? "financed_amount",
+          }
+        : null,
     installments: financing.installments.map((item) => ({
       installment_number: item.installmentNumber,
       due_date: item.dueDate,
@@ -347,25 +363,27 @@ export async function POST(request: Request) {
         .digest("hex"),
     }));
 
-    const balanceRows = extraction.data.balances.map((balance) => {
-      const match = (existingAccounts ?? []).find(
-        (item) =>
-          item.owner_scope === ownerData.owner_scope &&
-          item.owner_member_id === ownerData.owner_member_id &&
-          item.account_type === balance.accountType &&
-          normalizeMerchant(item.name) === normalizeMerchant(balance.name),
-      );
-      return {
-        account_id: match?.id ?? null,
-        ...ownerData,
-        name: balance.name,
-        institution: balance.institution,
-        account_type: balance.accountType,
-        balance_cents: balance.balanceCents,
-        balance_date: balance.balanceDate,
-        include_in_net_worth: balance.accountType !== "insurance",
-      };
-    });
+    const balanceRows = extraction.data.balances
+      .filter((balance) => !isNonAssetBalanceName(balance.name))
+      .map((balance) => {
+        const match = (existingAccounts ?? []).find(
+          (item) =>
+            item.owner_scope === ownerData.owner_scope &&
+            item.owner_member_id === ownerData.owner_member_id &&
+            item.account_type === balance.accountType &&
+            normalizeMerchant(item.name) === normalizeMerchant(balance.name),
+        );
+        return {
+          account_id: match?.id ?? null,
+          ...ownerData,
+          name: balance.name,
+          institution: balance.institution,
+          account_type: balance.accountType,
+          balance_cents: balance.balanceCents,
+          balance_date: balance.balanceDate,
+          include_in_net_worth: balance.accountType !== "insurance",
+        };
+      });
 
     const invoiceRow =
       documentType === "credit_card_invoice"
@@ -428,6 +446,7 @@ export async function POST(request: Request) {
         ),
         financingUpdated: Boolean(application?.financing_debt_id),
         updatedInstallments: Number(application?.updated_installments ?? 0),
+        assetUpdated: Boolean(financing?.asset),
         extractionMode: extraction.mode,
         invoiceItems: extraction.data.invoice?.items.length ?? null,
         invoiceTotalCents: extraction.data.invoice?.totalCents ?? null,

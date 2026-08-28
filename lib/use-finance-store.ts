@@ -5,6 +5,7 @@ import {
   emptyFinanceState,
   normalizeMerchant,
   type Account,
+  type Asset,
   type CreditCard,
   type Debt,
   type FinanceState,
@@ -126,6 +127,7 @@ export function useFinanceStore() {
       membersResult,
       transactionsResult,
       accountsResult,
+      assetsResult,
       cardsResult,
       debtsResult,
       debtInstallmentsResult,
@@ -147,6 +149,12 @@ export function useFinanceStore() {
         .order("transaction_date", { ascending: false }),
       supabase
         .from("accounts")
+        .select("*")
+        .eq("household_id", householdId)
+        .eq("is_active", true)
+        .order("name"),
+      supabase
+        .from("assets")
         .select("*")
         .eq("household_id", householdId)
         .eq("is_active", true)
@@ -190,6 +198,7 @@ export function useFinanceStore() {
       membersResult,
       transactionsResult,
       accountsResult,
+      assetsResult,
       cardsResult,
       debtsResult,
       debtInstallmentsResult,
@@ -264,6 +273,21 @@ export function useFinanceStore() {
           : null,
       }),
     );
+
+    const assets: Asset[] = ((assetsResult.data ?? []) as Row[]).map((row) => ({
+      id: String(row.id),
+      owner: ownerFromRow(row, members),
+      name: String(row.name),
+      type: row.asset_type as Asset["type"],
+      totalValueCents: number(row.total_value_cents),
+      valuationDate: row.valuation_date ? String(row.valuation_date) : null,
+      valueSource: row.value_source as Asset["valueSource"],
+      institution: row.institution ? String(row.institution) : null,
+      debtId: row.debt_id ? String(row.debt_id) : null,
+      sourceDocumentId: row.source_document_id
+        ? String(row.source_document_id)
+        : null,
+    }));
 
     const cards: CreditCard[] = ((cardsResult.data ?? []) as Row[]).map(
       (row) => ({
@@ -372,6 +396,7 @@ export function useFinanceStore() {
       people: members,
       transactions,
       accounts,
+      assets,
       cards,
       debts,
       goals,
@@ -453,6 +478,7 @@ export function useFinanceStore() {
       imported?: number;
       updatedAccounts?: number;
       financingUpdated?: boolean;
+      assetUpdated?: boolean;
       updatedInstallments?: number;
       extractionMode?: string;
       invoiceItems?: number | null;

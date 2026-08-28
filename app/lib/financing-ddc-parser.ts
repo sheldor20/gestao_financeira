@@ -94,6 +94,14 @@ export function parseDdcFinancingDocument(
     text,
     /Opera[cç][aã]o:\s*Implanta[^\n]*?Valor da Opera[cç][aã]o:\s*([\d.]+,\d{2})/i,
   );
+  const propertyValue = matchValue(
+    text,
+    /(?:Valor (?:do )?im[oó]vel|Valor de avalia[cç][aã]o|Valor de compra)\s*:?[ \t]*([\d.]+,\d{2})/i,
+  );
+  const propertyDescription = matchValue(
+    text,
+    /(?:Descri[cç][aã]o do im[oó]vel|Endere[cç]o do im[oó]vel|Identifica[cç][aã]o do im[oó]vel)\s*:[ \t]*([^\n]{4,240})/i,
+  );
   const annualInterest = matchValue(
     text,
     /Taxa de Juros\s*\(anual\)\s*([\d.,]+)%/i,
@@ -134,6 +142,19 @@ export function parseDdcFinancingDocument(
         ? decimal(annualInterest)
         : null,
       explicitAmortizationCents: null,
+      assetDescription: propertyDescription?.trim() || "Apartamento financiado",
+      assetValueCents: propertyValue
+        ? brlCents(propertyValue)
+        : originalAmount
+          ? brlCents(originalAmount)
+          : null,
+      assetValueSource: propertyValue
+        ? /avalia[cç][aã]o/i.test(text)
+          ? "property_value"
+          : "purchase_price"
+        : originalAmount
+          ? "financed_amount"
+          : null,
       installments,
     },
   };
