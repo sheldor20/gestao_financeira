@@ -1,10 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  accountTotals,
   classifyFixedExpenses,
   debtPaidCents,
   documentTransactionCount,
   goalSavedCents,
+  isNonAssetBalanceName,
   monthlyIncomeByPerson,
   monthlySummary,
   openInstallmentsTotalCents,
@@ -12,6 +14,8 @@ import {
   transactionsWithDebtInstallments,
   transactionsWithInvoiceDetails,
   type FinancialDocument,
+  type Account,
+  type Asset,
   type Debt,
   type Transaction,
 } from "../lib/finance-domain.ts";
@@ -343,4 +347,57 @@ test("reconhece o mesmo financiamento em PDFs atualizados", () => {
 
   assert.equal(first, afterAmortization);
   assert.notEqual(first, anotherContract);
+});
+
+test("não considera limite de crédito ou saldo devedor como patrimônio", () => {
+  const accounts: Account[] = [
+    {
+      id: "credit-limit",
+      owner: "kim",
+      name: "Limite de crédito total",
+      institution: "Banco Inter",
+      type: "other",
+      balanceCents: 4_965_000,
+      includeInNetWorth: true,
+      balanceDate: "2026-09-01",
+      sourceDocumentId: "invoice",
+    },
+    {
+      id: "investment",
+      owner: "kim",
+      name: "Reserva de investimentos",
+      institution: "Banco",
+      type: "investment",
+      balanceCents: 1_000_000,
+      includeInNetWorth: true,
+      balanceDate: "2026-08-28",
+      sourceDocumentId: "statement",
+    },
+  ];
+  const assets: Asset[] = [
+    {
+      id: "apartment",
+      owner: "kim",
+      name: "Apartamento financiado",
+      type: "real_estate",
+      totalValueCents: 23_600_000,
+      valuationDate: "2026-08-27",
+      valueSource: "financed_amount",
+      institution: "Itaú",
+      debtId: "financing",
+      sourceDocumentId: "financing-pdf",
+    },
+  ];
+
+  assert.equal(isNonAssetBalanceName("Limite de crédito total"), true);
+  assert.equal(
+    isNonAssetBalanceName("Saldo devedor (Sistema Financeiro Habitacional)"),
+    true,
+  );
+  assert.deepEqual(accountTotals(accounts, "all", assets), {
+    netWorthCents: 24_600_000,
+    financialCents: 1_000_000,
+    assetsCents: 23_600_000,
+    insuredCents: 0,
+  });
 });
