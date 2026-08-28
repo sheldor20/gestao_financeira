@@ -1,0 +1,370 @@
+import { createHash } from "node:crypto";
+import {
+  extractFinancialDocument,
+  type DocumentType,
+  type ExtractedTransaction,
+} from "@/app/lib/document-extractor";
+import { normalizeMerchant, type Owner } from "@/lib/finance-domain";
+import { createSupabaseServerClient } from "@/lib/supabase/server";
+
+export const runtime = "nodejs";
+export const maxDuration = 60;
+
+const allowedTypes = new Set([
+  "application/pdf",
+  "text/csv",
+  "text/plain",
+  "application/vnd.ms-excel",
+]);
+
+const documentTypes = new Set<DocumentType>([
+  "bank_statement",
+  "credit_card_invoice",
+  "investment_statement",
+  "insurance_statement",
+  "pension_statement",
+  "other",
+]);
+
+function safeFilename(name: string) {
+  return name
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-zA-Z0-9._-]/g, "-")
+    .replace(/-+/g, "-")
+    .slice(-140);
+}
+
+function ownerColumns(
+  owner: Owner,
+  members: Array<{ id: string; person_key: string | null }>,
+) {
+  if (owner === "joint") {
+    return { owner_scope: "joint", owner_member_id: null };
+  }
+  const member = members.find((item) => item.person_key === owner);
+  if (!member) throw new Error(`${owner} ainda não possui acesso ao espaço.`);
+  return { owner_scope: "individual", owner_member_id: member.id };
+}
+
+function matchesDescription(source: string, target: string) {
+  const left = normalizeMerchant(source);
+  const right = normalizeMerchant(target);
+  return right.length >= 4 && (left.includes(right) || right.includes(left));
+}
+
+function findDebt(
+  transaction: ExtractedTransaction,
+  debts: Array<{ id: string; description: string }>,
+) {
+  const debtLike = /d[ií]vida|empr[eé]stimo|financiamento|parcela/i.test(
+    `${transaction.category} ${transaction.description}`,
+  );
+  if (!debtLike) return null;
+  return (
+    debts.find((debt) =>
+      matchesDescription(transaction.description, debt.description),
+    )?.id ?? null
+  );
+}
+
+function findGoal(
+  transaction: ExtractedTransaction,
+  goals: Array<{ id: string; name: string }>,
+) {
+  if (
+    transaction.kind !== "transfer" &&
+    !/investimento|reserva|aporte|previd[eê]ncia/i.test(transaction.category)
+  ) {
+    return null;
+  }
+  return (
+    goals.find((goal) =>
+      matchesDescription(transaction.description, goal.name),
+    )?.id ?? null
+  );
+}
+
+export async function POST(request: Request) {
+  const supabase = await createSupabaseServerClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) {
+    return Response.json({ error: "Sessão expirada." }, { status: 401 });
+  }
+
+  let documentId = "";
+  try {
+    const form = await request.formData();
+    const file = form.get("file");
+    const owner = String(form.get("owner") ?? "joint") as Owner;
+    const documentType = String(
+      form.get("documentType") ?? "other",
+    ) as DocumentType;
+    const period = String(
+      form.get("period") ?? new Date().toISOString().slice(0, 7),
+    );
+    const accountId = String(form.get("accountId") ?? "") || null;
+    const cardId = String(form.get("cardId") ?? "") || null;
+
+    if (!(file instanceof File)) {
+      return Response.json({ error: "Selecione um documento." }, { status: 400 });
+    }
+    if (!(["kim", "alexandre", "joint"] as string[]).includes(owner)) {
+      return Response.json({ error: "Responsável inválido." }, { status: 400 });
+    }
+    if (!documentTypes.has(documentType)) {
+      return Response.json({ error: "Tipo de documento inválido." }, { status: 400 });
+    }
+    if (!/^\d{4}-\d{2}$/.test(period)) {
+      return Response.json({ error: "Período inválido." }, { status: 400 });
+    }
+    if (file.size > 15 * 1024 * 1024) {
+      return Response.json(
+        { error: "O documento deve ter no máximo 15 MB." },
+        { status: 400 },
+      );
+    }
+    if (!allowedTypes.has(file.type) && !/\.(pdf|csv|txt)$/i.test(file.name)) {
+      return Response.json(
+        { error: "Envie PDF, CSV ou TXT." },
+        { status: 400 },
+      );
+    }
+
+    const { data: membership } = await supabase
+      .from("household_members")
+      .select("household_id")
+      .eq("user_id", user.id)
+      .eq("status", "active")
+      .single();
+    if (!membership) {
+      return Response.json({ error: "Família não encontrada." }, { status: 403 });
+    }
+    const householdId = String(membership.household_id);
+
+    const { data: members, error: membersError } = await supabase
+      .from("household_members")
+      .select("id, person_key")
+      .eq("household_id", householdId)
+      .eq("status", "active");
+    if (membersError) throw membersError;
+    const ownerData = ownerColumns(owner, members ?? []);
+
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    const checksum = createHash("sha256").update(bytes).digest("hex");
+    const { data: duplicate } = await supabase
+      .from("financial_documents")
+      .select("id, status")
+      .eq("household_id", householdId)
+      .eq("content_checksum", checksum)
+      .maybeSingle();
+    if (duplicate) {
+      return Response.json(
+        { error: "Este documento já foi importado." },
+        { status: 409 },
+      );
+    }
+
+    documentId = crypto.randomUUID();
+    const storagePath = `${householdId}/${documentId}/${safeFilename(file.name)}`;
+    const { error: uploadError } = await supabase.storage
+      .from("financial-documents")
+      .upload(storagePath, bytes, {
+        contentType: file.type || "application/octet-stream",
+        upsert: false,
+      });
+    if (uploadError) throw uploadError;
+
+    const { error: documentError } = await supabase
+      .from("financial_documents")
+      .insert({
+        id: documentId,
+        household_id: householdId,
+        ...ownerData,
+        document_type: documentType,
+        file_name: file.name,
+        mime_type: file.type || "application/octet-stream",
+        storage_path: storagePath,
+        content_checksum: checksum,
+        status: "processing",
+      });
+    if (documentError) {
+      await supabase.storage.from("financial-documents").remove([storagePath]);
+      throw documentError;
+    }
+
+    const extraction = await extractFinancialDocument(
+      bytes,
+      { name: file.name, type: file.type || "application/pdf" },
+      documentType,
+      period,
+    );
+
+    const [{ data: debts }, { data: goals }, { data: existingAccounts }] =
+      await Promise.all([
+        supabase
+          .from("debts")
+          .select("id, description")
+          .eq("household_id", householdId)
+          .neq("status", "paid"),
+        supabase
+          .from("goals")
+          .select("id, name")
+          .eq("household_id", householdId)
+          .eq("status", "active"),
+        supabase
+          .from("accounts")
+          .select("id, name, institution, owner_scope, owner_member_id, account_type")
+          .eq("household_id", householdId),
+      ]);
+
+    const source =
+      documentType === "bank_statement"
+        ? "bank_statement"
+        : documentType === "credit_card_invoice"
+          ? "card_invoice"
+          : "document_ai";
+
+    const transactionRows = extraction.data.transactions.map((item, index) => ({
+      household_id: householdId,
+      ...ownerData,
+      kind: item.kind,
+      description: item.description,
+      category_label: item.category,
+      amount_cents: item.amountCents,
+      transaction_date: item.date,
+      status: "paid",
+      source,
+      account_id: accountId,
+      credit_card_id: cardId,
+      installment_current: item.installmentCurrent,
+      installment_total: item.installmentTotal,
+      merchant_key: normalizeMerchant(item.merchant || item.description),
+      ai_confidence: item.confidence,
+      source_document_id: documentId,
+      debt_id: findDebt(item, debts ?? []),
+      goal_id: findGoal(item, goals ?? []),
+      external_fingerprint: createHash("sha256")
+        .update(`${checksum}:${index}`)
+        .digest("hex"),
+    }));
+
+    if (transactionRows.length) {
+      const { error: transactionError } = await supabase
+        .from("transactions")
+        .insert(transactionRows);
+      if (transactionError) throw transactionError;
+    }
+
+    let updatedAccounts = 0;
+    for (const balance of extraction.data.balances) {
+      const match = (existingAccounts ?? []).find(
+        (item) =>
+          item.owner_scope === ownerData.owner_scope &&
+          item.owner_member_id === ownerData.owner_member_id &&
+          item.account_type === balance.accountType &&
+          normalizeMerchant(item.name) === normalizeMerchant(balance.name),
+      );
+      if (match) {
+        const { error: updateError } = await supabase
+          .from("accounts")
+          .update({
+            balance_cents: balance.balanceCents,
+            balance_date: balance.balanceDate,
+            institution: balance.institution,
+            source_document_id: documentId,
+          })
+          .eq("id", match.id)
+          .eq("household_id", householdId);
+        if (updateError) throw updateError;
+      } else {
+        const { error: accountError } = await supabase.from("accounts").insert({
+          household_id: householdId,
+          ...ownerData,
+          name: balance.name,
+          institution: balance.institution,
+          account_type: balance.accountType,
+          balance_cents: balance.balanceCents,
+          balance_date: balance.balanceDate,
+          include_in_net_worth: balance.accountType !== "insurance",
+          source_document_id: documentId,
+        });
+        if (accountError) throw accountError;
+      }
+      updatedAccounts += 1;
+    }
+
+    if (documentType === "credit_card_invoice") {
+      const totalCents = extraction.data.transactions
+        .filter((item) => item.kind === "expense")
+        .reduce((sum, item) => sum + item.amountCents, 0);
+      const { error: invoiceError } = await supabase.from("invoices").insert({
+        household_id: householdId,
+        ...ownerData,
+        credit_card_id: cardId,
+        filename: file.name,
+        period: `${period}-01`,
+        total_cents: totalCents,
+        item_count: transactionRows.length,
+        status: "reviewed",
+        content_checksum: checksum,
+        source_document_id: documentId,
+      });
+      if (invoiceError) throw invoiceError;
+    }
+
+    await supabase.rpc("reclassify_fixed_expenses", {
+      household_id_input: householdId,
+    });
+
+    const { error: appliedError } = await supabase
+      .from("financial_documents")
+      .update({
+        institution: extraction.data.institution,
+        period_start: extraction.data.periodStart,
+        period_end: extraction.data.periodEnd,
+        status: "applied",
+        extraction_model: extraction.model,
+        extraction_mode: extraction.mode,
+        extracted_item_count:
+          extraction.data.transactions.length + extraction.data.balances.length,
+        raw_extraction: extraction.data,
+        error_message: null,
+      })
+      .eq("id", documentId)
+      .eq("household_id", householdId);
+    if (appliedError) throw appliedError;
+
+    return Response.json(
+      {
+        documentId,
+        imported: transactionRows.length,
+        updatedAccounts,
+        extractionMode: extraction.mode,
+      },
+      { status: 201 },
+    );
+  } catch (error) {
+    if (documentId) {
+      await supabase
+        .from("financial_documents")
+        .update({
+          status: "failed",
+          error_message:
+            error instanceof Error ? error.message.slice(0, 500) : "Falha na importação.",
+        })
+        .eq("id", documentId);
+    }
+    return Response.json(
+      {
+        error:
+          error instanceof Error
+            ? error.message
+            : "Não foi possível importar o documento.",
+      },
+      { status: 500 },
+    );
+  }
+}
