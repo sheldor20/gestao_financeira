@@ -10,6 +10,7 @@ import {
   type Transaction,
 } from "../lib/finance-domain.ts";
 import { normalizeFinancialDocumentContentType } from "../lib/document-upload.ts";
+import { getAuthorizedUser } from "../lib/authorized-users.ts";
 
 function movement(
   id: string,
@@ -137,4 +138,14 @@ test("normaliza o tipo de arquivo antes de enviar ao bucket privado", () => {
     normalizeFinancialDocumentContentType({ name: "foto.png", type: "image/png" }),
     null,
   );
+});
+
+test("vincula somente os dois e-mails às identidades corretas", () => {
+  assert.deepEqual(getAuthorizedUser("ELIAKIM.MINICHIELLO@GMAIL.COM"), {
+    email: "eliakim.minichiello@gmail.com",
+    person: "kim",
+    name: "Kim",
+  });
+  assert.equal(getAuthorizedUser("pantoja.smp@gmail.com")?.person, "alexandre");
+  assert.equal(getAuthorizedUser("outra-pessoa@example.com"), null);
 });
