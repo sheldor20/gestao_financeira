@@ -4,6 +4,7 @@ import {
   ArrowDownLeft,
   ArrowUpRight,
   Banknote,
+  Building2,
   CheckCircle2,
   ChevronDown,
   CircleDollarSign,
@@ -37,6 +38,7 @@ import {
   documentTransactionCount,
   expenseByCategory,
   goalSavedCents,
+  isNonAssetBalanceName,
   matchesScope,
   monthlyIncomeByPerson,
   monthlySummary,
@@ -86,7 +88,7 @@ const pageCopy: Record<Tab, { eyebrow: string; title: string; subtitle: string }
   assets: {
     eyebrow: "PATRIMÔNIO",
     title: "Bens e reservas",
-    subtitle: "Contas, investimentos, previdência e seguros extraídos dos documentos.",
+    subtitle: "Contas, imóveis, investimentos, previdência e seguros extraídos dos documentos.",
   },
   planning: {
     eyebrow: "PLANEJAMENTO",
@@ -113,6 +115,13 @@ const assetLabels: Record<Account["type"], string> = {
   insurance: "Seguros",
   cash: "Dinheiro",
   other: "Outros bens",
+};
+
+const assetValueLabels = {
+  property_value: "Valor de avaliação",
+  purchase_price: "Preço de compra",
+  financed_amount: "Valor financiado no contrato",
+  document: "Valor informado no documento",
 };
 
 function money(cents: number) {
@@ -218,7 +227,13 @@ export function FinanceApp({ userEmail }: { userEmail: string }) {
       ),
     [summary.visible, search],
   );
-  const visibleAccounts = state.accounts.filter((item) =>
+  const visibleAccounts = state.accounts.filter(
+    (item) =>
+      matchesScope(item.owner, scope) &&
+      (item.includeInNetWorth || item.type === "insurance") &&
+      !isNonAssetBalanceName(item.name),
+  );
+  const visibleAssets = state.assets.filter((item) =>
     matchesScope(item.owner, scope),
   );
   const visibleDebts = state.debts.filter((item) =>
@@ -227,7 +242,7 @@ export function FinanceApp({ userEmail }: { userEmail: string }) {
   const visibleGoals = state.goals.filter((item) =>
     matchesScope(item.owner, scope),
   );
-  const totals = accountTotals(state.accounts, scope);
+  const totals = accountTotals(state.accounts, scope, state.assets);
   const fixedExpenses = summary.cashflow.filter(
     (item) => item.kind === "expense" && item.isFixedRecurring,
   );
@@ -254,7 +269,7 @@ export function FinanceApp({ userEmail }: { userEmail: string }) {
       importFormRef.current?.reset();
       notify(
         payload.financingUpdated
-          ? `Financiamento atualizado com ${payload.updatedInstallments ?? 0} próximas parcelas.`
+          ? `Financiamento e ${payload.assetUpdated ? "bem financiado" : "cronograma"} atualizados, com ${payload.updatedInstallments ?? 0} próximas parcelas.`
           : payload.invoiceTotalCents
             ? `Fatura de ${money(payload.invoiceTotalCents)} aplicada como saída, com ${payload.invoiceItems ?? 0} itens detalhados.`
           : `${payload.imported ?? 0} movimentações e ${payload.updatedAccounts ?? 0} saldos aplicados${payload.extractionMode === "ai" ? " pela IA" : " pela leitura básica"}.`,
@@ -556,15 +571,17 @@ export function FinanceApp({ userEmail }: { userEmail: string }) {
           {tab === "assets" && (
             <>
               <div className="metric-grid three">
-                <Metric icon={Landmark} label="Patrimônio financeiro" value={money(totals.netWorthCents)} tone="purple" note="Sem contar coberturas" />
+                <Metric icon={Landmark} label="Patrimônio total" value={money(totals.netWorthCents)} tone="purple" note="Financeiro + bens, sem seguros" />
                 <Metric icon={ShieldCheck} label="Seguros" value={money(totals.insuredCents)} tone="blue" note="Coberturas importadas" />
-                <Metric icon={TrendingUp} label="Contas e bens" value={String(visibleAccounts.length)} tone="green" note="Com saldo atualizado" />
+                <Metric icon={TrendingUp} label="Contas e bens" value={String(visibleAccounts.length + visibleAssets.length)} tone="green" note="Com valor atualizado" />
               </div>
               <section className="panel">
-                <div className="panel-heading"><div><span className="eyebrow">SALDOS IMPORTADOS</span><h2>Patrimônio por pessoa</h2></div></div>
-                {visibleAccounts.length ? <div className="asset-grid">{visibleAccounts.map((account) => (
+                <div className="panel-heading"><div><span className="eyebrow">BENS E SALDOS IMPORTADOS</span><h2>Patrimônio por pessoa</h2></div></div>
+                {visibleAccounts.length || visibleAssets.length ? <div className="asset-grid">{visibleAssets.map((asset) => (
+                  <article className="asset-card financed-asset" key={asset.id}><div className="asset-icon"><Building2 size={21} /></div><div className="asset-title"><span>{asset.type === "real_estate" ? "Imóvel" : "Bem"}</span><h3>{asset.name}</h3><small>{asset.institution || "Extraído do financiamento"}</small></div>{ownerBadge(asset.owner)}<strong>{money(asset.totalValueCents)}</strong><span className="balance-date">{assetValueLabels[asset.valueSource]} · {dateLabel(asset.valuationDate)}</span></article>
+                ))}{visibleAccounts.map((account) => (
                   <article className="asset-card" key={account.id}><div className="asset-icon">{account.type === "insurance" ? <ShieldCheck size={21} /> : account.type === "investment" || account.type === "pension" ? <TrendingUp size={21} /> : <Landmark size={21} />}</div><div className="asset-title"><span>{assetLabels[account.type]}</span><h3>{account.name}</h3><small>{account.institution || "Instituição não identificada"}</small></div>{ownerBadge(account.owner)}<strong>{money(account.balanceCents)}</strong><span className="balance-date">Saldo em {dateLabel(account.balanceDate)}</span></article>
-                ))}</div> : <EmptyState icon={Landmark} text="Importe extratos bancários, de investimentos, previdência ou seguros para formar o patrimônio." action="Importar documento" onAction={() => openImport()} />}
+                ))}</div> : <EmptyState icon={Landmark} text="Importe extratos ou o PDF do financiamento para formar o patrimônio." action="Importar documento" onAction={() => openImport()} />}
               </section>
             </>
           )}
