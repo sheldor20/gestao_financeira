@@ -116,6 +116,7 @@ export function parseDdcFinancingDocument(
     periodEnd: statementDate,
     transactions: [],
     balances: [],
+    invoice: null,
     financing: {
       contractReference,
       description: "Financiamento imobiliário",

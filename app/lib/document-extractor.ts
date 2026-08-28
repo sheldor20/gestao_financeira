@@ -1,6 +1,7 @@
 import OpenAI from "openai";
 import { extractText, getDocumentProxy } from "unpdf";
 import { parseDdcFinancingDocument } from "./financing-ddc-parser";
+import { parseInterCreditCardInvoice } from "./inter-credit-card-parser";
 import { parseInvoiceText } from "./invoice-parser";
 import { normalizeMerchant } from "@/lib/finance-domain";
 
@@ -67,12 +68,21 @@ export type ExtractedFinancing = {
   installments: ExtractedFinancingInstallment[];
 };
 
+export type ExtractedInvoice = {
+  totalCents: number;
+  dueDate: string;
+  chargesTotalCents: number | null;
+  anticipatedCreditCents: number | null;
+  items: ExtractedTransaction[];
+};
+
 export type ExtractedFinancialDocument = {
   institution: string | null;
   periodStart: string | null;
   periodEnd: string | null;
   transactions: ExtractedTransaction[];
   balances: ExtractedBalance[];
+  invoice: ExtractedInvoice | null;
   financing: ExtractedFinancing | null;
 };
 
@@ -85,6 +95,7 @@ const extractionSchema = {
     "periodEnd",
     "transactions",
     "balances",
+    "invoice",
     "financing",
   ],
   properties: {
@@ -151,6 +162,69 @@ const extractionSchema = {
           balanceDate: { type: "string" },
         },
       },
+    },
+    invoice: {
+      anyOf: [
+        { type: "null" },
+        {
+          type: "object",
+          additionalProperties: false,
+          required: [
+            "totalCents",
+            "dueDate",
+            "chargesTotalCents",
+            "anticipatedCreditCents",
+            "items",
+          ],
+          properties: {
+            totalCents: { type: "integer", minimum: 0 },
+            dueDate: { type: "string" },
+            chargesTotalCents: { type: ["integer", "null"], minimum: 0 },
+            anticipatedCreditCents: {
+              type: ["integer", "null"],
+              minimum: 0,
+            },
+            items: {
+              type: "array",
+              items: {
+                type: "object",
+                additionalProperties: false,
+                required: [
+                  "date",
+                  "description",
+                  "amountCents",
+                  "kind",
+                  "category",
+                  "merchant",
+                  "installmentCurrent",
+                  "installmentTotal",
+                  "confidence",
+                ],
+                properties: {
+                  date: { type: "string" },
+                  description: { type: "string" },
+                  amountCents: { type: "integer", minimum: 0 },
+                  kind: {
+                    type: "string",
+                    enum: ["income", "expense", "transfer"],
+                  },
+                  category: { type: "string" },
+                  merchant: { type: "string" },
+                  installmentCurrent: {
+                    type: ["integer", "null"],
+                    minimum: 1,
+                  },
+                  installmentTotal: {
+                    type: ["integer", "null"],
+                    minimum: 1,
+                  },
+                  confidence: { type: "number", minimum: 0, maximum: 1 },
+                },
+              },
+            },
+          },
+        },
+      ],
     },
     financing: {
       anyOf: [
@@ -229,10 +303,13 @@ Regras obrigatórias:
 - Retorne todos os valores monetários em centavos inteiros, sem separadores.
 - Retorne datas no formato YYYY-MM-DD.
 - Entradas em conta são income; débitos e compras são expense; movimentações entre contas são transfer.
-- Em faturas de cartão, extraia cada compra como expense e ignore linhas de total, limite, saldo anterior e pagamento da fatura.
+- Em faturas de cartão, preencha invoice com o valor total a pagar, vencimento e todos os itens da seção da fatura atual. Não inclua compras da seção de próxima fatura.
+- Em faturas de cartão, transactions deve conter somente uma expense com o valor total a pagar na data do vencimento. Os itens individuais ficam em invoice.items para não duplicar a saída.
+- Limite total, limite utilizado, limite disponível, saldo de compras parceladas e opções de parcelamento nunca são balances nem transactions. Em faturas de cartão, balances deve ficar vazio.
+- Pagamentos e créditos exibidos dentro da fatura devem ficar em invoice.items como transfer, pois não são renda. Compras e encargos ficam como expense.
 - Em extratos, extraia todas as entradas, saídas e transferências, sem transformar saldo em transação.
 - Em documentos de investimento, previdência e seguros, extraia o saldo atual em balances.
-- Em financiamento, preencha financing com o contrato, saldo devedor e somente as parcelas exibidas no documento. Não transforme o cronograma em transactions.
+- Em financiamento, preencha financing com o contrato, saldo devedor e somente as parcelas exibidas no documento. Não transforme o cronograma em transactions e use invoice como null.
 - A description do financiamento deve ser curta e estável entre documentos, como "Financiamento do apartamento", sem saldo, parcela ou data.
 - Use a referência do contrato exatamente como aparece. Se estiver mascarada, mantenha a máscara; nunca complete dígitos ausentes.
 - explicitAmortizationCents só deve ser preenchido quando o documento disser explicitamente que houve amortização, liquidação antecipada ou redução extraordinária. Uma parcela normal não é amortização extraordinária.
@@ -242,28 +319,62 @@ Regras obrigatórias:
 - merchant deve ser o nome estável do estabelecimento ou contraparte, sem números de parcela, datas ou identificadores.
 - confidence representa apenas a confiança na leitura daquele lançamento.`;
 
-function cleanExtraction(value: ExtractedFinancialDocument) {
+function cleanTransactions(items: ExtractedTransaction[]) {
+  return (items ?? [])
+    .filter(
+      (item) =>
+        /^\d{4}-\d{2}-\d{2}$/.test(item.date) &&
+        item.amountCents > 0 &&
+        item.description.trim(),
+    )
+    .map((item) => ({
+      ...item,
+      description: item.description.trim().slice(0, 240),
+      category: item.category.trim().slice(0, 80) || "Outros",
+      merchant:
+        normalizeMerchant(item.merchant || item.description) ||
+        normalizeMerchant(item.description),
+      confidence: Math.min(1, Math.max(0, item.confidence)),
+    }));
+}
+
+function cleanExtraction(
+  value: ExtractedFinancialDocument,
+  documentType?: DocumentType,
+) {
+  const invoice =
+    value.invoice &&
+    value.invoice.totalCents > 0 &&
+    /^\d{4}-\d{2}-\d{2}$/.test(value.invoice.dueDate)
+      ? {
+          ...value.invoice,
+          items: cleanTransactions(value.invoice.items),
+        }
+      : null;
+  const extractedTransactions = cleanTransactions(value.transactions);
+  const transactions =
+    documentType === "credit_card_invoice" && invoice
+      ? [
+          {
+            date: invoice.dueDate,
+            description: `Fatura ${value.institution?.trim() || "do cartão"}`,
+            amountCents: invoice.totalCents,
+            kind: "expense" as const,
+            category: "Dívidas",
+            merchant: normalizeMerchant(value.institution || "fatura do cartão"),
+            installmentCurrent: null,
+            installmentTotal: null,
+            confidence: 0.99,
+          },
+        ]
+      : extractedTransactions;
+
   return {
     institution: value.institution?.trim() || null,
     periodStart: value.periodStart || null,
     periodEnd: value.periodEnd || null,
-    transactions: value.transactions
-      .filter(
-        (item) =>
-          /^\d{4}-\d{2}-\d{2}$/.test(item.date) &&
-          item.amountCents > 0 &&
-          item.description.trim(),
-      )
-      .map((item) => ({
-        ...item,
-        description: item.description.trim().slice(0, 240),
-        category: item.category.trim().slice(0, 80) || "Outros",
-        merchant:
-          normalizeMerchant(item.merchant || item.description) ||
-          normalizeMerchant(item.description),
-        confidence: Math.min(1, Math.max(0, item.confidence)),
-      })),
-    balances: value.balances
+    transactions,
+    balances: (documentType === "credit_card_invoice" ? [] : value.balances)
       .filter(
         (item) =>
           item.name.trim() && /^\d{4}-\d{2}-\d{2}$/.test(item.balanceDate),
@@ -273,6 +384,7 @@ function cleanExtraction(value: ExtractedFinancialDocument) {
         name: item.name.trim().slice(0, 120),
         institution: item.institution.trim().slice(0, 120),
       })),
+    invoice,
     financing: value.financing
       ? {
           ...value.financing,
@@ -349,6 +461,7 @@ async function extractWithAI(
   return {
     data: cleanExtraction(
       JSON.parse(response.output_text) as ExtractedFinancialDocument,
+      documentType,
     ),
     model,
   };
@@ -380,6 +493,7 @@ async function deterministicExtraction(
     periodEnd: null,
     transactions: items,
     balances: [],
+    invoice: null,
     financing: null,
   } satisfies ExtractedFinancialDocument;
 }
@@ -411,13 +525,30 @@ export async function extractFinancialDocument(
       );
       if (deterministic) {
         return {
-          data: cleanExtraction(deterministic),
+          data: cleanExtraction(deterministic, documentType),
           model: null,
           mode: "deterministic" as const,
         };
       }
     } catch {
       // Se não for um DDC legível, a leitura inteligente continua como fallback.
+    }
+  }
+
+  if (documentType === "credit_card_invoice") {
+    try {
+      const deterministic = parseInterCreditCardInvoice(
+        await extractDocumentText(bytes, file),
+      );
+      if (deterministic) {
+        return {
+          data: cleanExtraction(deterministic, documentType),
+          model: null,
+          mode: "deterministic" as const,
+        };
+      }
+    } catch {
+      // Se não for uma fatura Inter legível, a leitura inteligente continua.
     }
   }
 

@@ -331,7 +331,7 @@ export async function POST(request: Request) {
       category_label: item.category,
       amount_cents: item.amountCents,
       transaction_date: item.date,
-      status: "paid",
+      status: documentType === "credit_card_invoice" ? "scheduled" : "paid",
       source,
       account_id: accountId,
       credit_card_id: cardId,
@@ -373,11 +373,16 @@ export async function POST(request: Request) {
             ...ownerData,
             credit_card_id: cardId,
             filename: file.name,
-            period: `${period}-01`,
-            total_cents: extraction.data.transactions
-              .filter((item) => item.kind === "expense")
-              .reduce((sum, item) => sum + item.amountCents, 0),
-            item_count: transactionRows.length,
+            period: extraction.data.invoice
+              ? `${extraction.data.invoice.dueDate.slice(0, 7)}-01`
+              : `${period}-01`,
+            total_cents:
+              extraction.data.invoice?.totalCents ??
+              extraction.data.transactions
+                .filter((item) => item.kind === "expense")
+                .reduce((sum, item) => sum + item.amountCents, 0),
+            item_count:
+              extraction.data.invoice?.items.length ?? transactionRows.length,
             status: "reviewed",
             content_checksum: checksum,
           }
@@ -404,7 +409,8 @@ export async function POST(request: Request) {
           extraction_model: extraction.model,
           extraction_mode: extraction.mode,
           extracted_item_count:
-            extraction.data.transactions.length +
+            (extraction.data.invoice?.items.length ??
+              extraction.data.transactions.length) +
             extraction.data.balances.length +
             (financing ? 1 + financing.installments.length : 0),
           raw_extraction: extraction.data,
@@ -423,6 +429,8 @@ export async function POST(request: Request) {
         financingUpdated: Boolean(application?.financing_debt_id),
         updatedInstallments: Number(application?.updated_installments ?? 0),
         extractionMode: extraction.mode,
+        invoiceItems: extraction.data.invoice?.items.length ?? null,
+        invoiceTotalCents: extraction.data.invoice?.totalCents ?? null,
       },
       { status: 201 },
     );
