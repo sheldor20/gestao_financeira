@@ -277,6 +277,7 @@ export function useFinanceStore() {
               ? null
               : number(item.remaining_balance_cents),
           status: item.status as Debt["installments"][number]["status"],
+          sourceDocumentId: String(item.source_document_id),
         })),
       snapshots: snapshotRows
         .filter((item) => item.debt_id === row.id)

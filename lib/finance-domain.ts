@@ -48,7 +48,8 @@ export type TransactionSource =
   | "recurrence"
   | "bank_statement"
   | "card_invoice"
-  | "document_ai";
+  | "document_ai"
+  | "debt_installment";
 
 export type Transaction = {
   id: string;
@@ -106,6 +107,7 @@ export type DebtInstallment = {
   feesCents: number | null;
   remainingBalanceCents: number | null;
   status: "pending" | "paid" | "overdue" | "partially_paid";
+  sourceDocumentId: string;
 };
 
 export type DebtSnapshot = {
@@ -184,6 +186,74 @@ export function documentTransactionCount(
   return transactions.filter(
     (transaction) => transaction.sourceDocumentId === documentId,
   ).length;
+}
+
+export function openInstallmentsTotalCents(debt: Debt) {
+  return debt.installments
+    .filter((installment) => installment.status !== "paid")
+    .reduce(
+      (sum, installment) => sum + installment.amountCents,
+      0,
+    );
+}
+
+export function transactionsWithDebtInstallments(
+  transactions: Transaction[],
+  debts: Debt[],
+) {
+  const matchedPayments = new Set<string>();
+  const scheduled = debts.flatMap((debt) =>
+    debt.installments.flatMap((installment) => {
+      if (installment.status === "paid") return [];
+
+      const paidTransaction = transactions.find(
+        (transaction) =>
+          !matchedPayments.has(transaction.id) &&
+          transaction.debtId === debt.id &&
+          transaction.kind === "expense" &&
+          transaction.status === "paid" &&
+          transaction.transactionDate.slice(0, 7) ===
+            installment.dueDate.slice(0, 7) &&
+          (transaction.amountCents === installment.amountCents ||
+            transaction.installmentCurrent === installment.installmentNumber),
+      );
+
+      if (paidTransaction) {
+        matchedPayments.add(paidTransaction.id);
+        return [];
+      }
+
+      return [
+        {
+          id: `debt-installment:${installment.id}`,
+          owner: debt.owner,
+          kind: "expense" as const,
+          description: `${debt.description} · Parcela ${installment.installmentNumber}/${debt.installmentTotal}`,
+          category: "Dívidas",
+          amountCents: installment.amountCents,
+          transactionDate: installment.dueDate,
+          status: "scheduled" as const,
+          source: "debt_installment" as const,
+          accountId: null,
+          cardId: null,
+          installmentCurrent: installment.installmentNumber,
+          installmentTotal: debt.installmentTotal,
+          note: "Parcela prevista pelo cronograma do financiamento.",
+          merchantKey: normalizeMerchant(debt.description),
+          isFixedRecurring: false,
+          recurrenceStreak: 0,
+          aiConfidence: null,
+          sourceDocumentId: installment.sourceDocumentId,
+          debtId: debt.id,
+          goalId: null,
+        },
+      ];
+    }),
+  );
+
+  return [...transactions, ...scheduled].sort((left, right) =>
+    right.transactionDate.localeCompare(left.transactionDate),
+  );
 }
 
 export function transactionsForPeriod(
