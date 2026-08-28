@@ -84,6 +84,8 @@ export function useFinanceStore() {
       accountsResult,
       cardsResult,
       debtsResult,
+      debtInstallmentsResult,
+      debtSnapshotsResult,
       goalsResult,
       documentsResult,
     ] = await Promise.all([
@@ -117,6 +119,17 @@ export function useFinanceStore() {
         .eq("household_id", householdId)
         .order("due_date"),
       supabase
+        .from("debt_installments")
+        .select("*")
+        .eq("household_id", householdId)
+        .in("status", ["pending", "overdue", "partially_paid"])
+        .order("due_date"),
+      supabase
+        .from("debt_snapshots")
+        .select("*")
+        .eq("household_id", householdId)
+        .order("statement_date", { ascending: false }),
+      supabase
         .from("goals")
         .select("*")
         .eq("household_id", householdId)
@@ -136,6 +149,8 @@ export function useFinanceStore() {
       accountsResult,
       cardsResult,
       debtsResult,
+      debtInstallmentsResult,
+      debtSnapshotsResult,
       goalsResult,
       documentsResult,
     ]);
@@ -218,6 +233,8 @@ export function useFinanceStore() {
       }),
     );
 
+    const installmentRows = (debtInstallmentsResult.data ?? []) as Row[];
+    const snapshotRows = (debtSnapshotsResult.data ?? []) as Row[];
     const debts: Debt[] = ((debtsResult.data ?? []) as Row[]).map((row) => ({
       id: String(row.id),
       owner: ownerFromRow(row, members),
@@ -229,6 +246,48 @@ export function useFinanceStore() {
       dueDate: String(row.due_date),
       status: row.status as Debt["status"],
       category: "Dívidas",
+      debtType: row.debt_type === "financing" ? "financing" : "other",
+      institution: row.institution ? String(row.institution) : null,
+      outstandingCents:
+        row.outstanding_cents == null ? null : number(row.outstanding_cents),
+      interestRateAnnual:
+        row.interest_rate_annual == null
+          ? null
+          : number(row.interest_rate_annual),
+      lastStatementDate: row.last_statement_date
+        ? String(row.last_statement_date)
+        : null,
+      lastAmortizationCents: number(row.last_amortization_cents),
+      sourceDocumentId: row.source_document_id
+        ? String(row.source_document_id)
+        : null,
+      installments: installmentRows
+        .filter((item) => item.debt_id === row.id)
+        .map((item) => ({
+          id: String(item.id),
+          installmentNumber: number(item.installment_number),
+          dueDate: String(item.due_date),
+          amountCents: number(item.amount_cents),
+          principalCents:
+            item.principal_cents == null ? null : number(item.principal_cents),
+          interestCents:
+            item.interest_cents == null ? null : number(item.interest_cents),
+          feesCents: item.fees_cents == null ? null : number(item.fees_cents),
+          remainingBalanceCents:
+            item.remaining_balance_cents == null
+              ? null
+              : number(item.remaining_balance_cents),
+          status: item.status as Debt["installments"][number]["status"],
+        })),
+      snapshots: snapshotRows
+        .filter((item) => item.debt_id === row.id)
+        .map((item) => ({
+          id: String(item.id),
+          statementDate: String(item.statement_date),
+          outstandingCents: number(item.outstanding_cents),
+          amortizationCents: number(item.amortization_cents),
+          sourceDocumentId: String(item.source_document_id),
+        })),
     }));
 
     const goals: Goal[] = ((goalsResult.data ?? []) as Row[]).map((row) => ({
@@ -280,7 +339,18 @@ export function useFinanceStore() {
     return () => window.clearTimeout(refreshTask);
   }, [refresh]);
 
-  async function addDebt(input: Omit<Debt, "id" | "status" | "category">) {
+  async function addDebt(
+    input: Pick<
+      Debt,
+      | "owner"
+      | "description"
+      | "totalCents"
+      | "installmentCents"
+      | "installmentCurrent"
+      | "installmentTotal"
+      | "dueDate"
+    >,
+  ) {
     const { error: insertError } = await supabase.from("debts").insert({
       household_id: state.householdId,
       ...ownerColumns(input.owner, state.people),
@@ -291,6 +361,7 @@ export function useFinanceStore() {
       installment_total: input.installmentTotal,
       due_date: input.dueDate,
       status: "pending",
+      debt_type: "other",
     });
     if (insertError) throw insertError;
     await refresh();
@@ -335,6 +406,8 @@ export function useFinanceStore() {
       error?: string;
       imported?: number;
       updatedAccounts?: number;
+      financingUpdated?: boolean;
+      updatedInstallments?: number;
       extractionMode?: string;
     };
     if (!response.ok) throw new Error(payload.error ?? "Falha na importação.");
