@@ -12,6 +12,7 @@ import {
   normalizeMerchant,
   type Owner,
 } from "@/lib/finance-domain";
+import { ownerColumnsForSelection } from "@/lib/owner-selection";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
@@ -121,18 +122,6 @@ function safeFilename(name: string) {
     .slice(-140);
 }
 
-function ownerColumns(
-  owner: Owner,
-  members: Array<{ id: string; person_key: string | null }>,
-) {
-  if (owner === "joint") {
-    return { owner_scope: "joint", owner_member_id: null };
-  }
-  const member = members.find((item) => item.person_key === owner);
-  if (!member) throw new Error(`${owner} ainda não possui acesso ao espaço.`);
-  return { owner_scope: "individual", owner_member_id: member.id };
-}
-
 function matchesDescription(source: string, target: string) {
   const left = normalizeMerchant(source);
   const right = normalizeMerchant(target);
@@ -240,7 +229,19 @@ export async function POST(request: Request) {
       .eq("household_id", householdId)
       .eq("status", "active");
     if (membersError) throw membersError;
-    const ownerData = ownerColumns(owner, members ?? []);
+    const ownerData = ownerColumnsForSelection(
+      owner,
+      (members ?? []).flatMap((member) =>
+        member.person_key === "kim" || member.person_key === "alexandre"
+          ? [
+              {
+                personKey: member.person_key,
+                memberId: String(member.id),
+              },
+            ]
+          : [],
+      ),
+    );
 
     const bytes = new Uint8Array(await file.arrayBuffer());
     const checksum = createHash("sha256").update(bytes).digest("hex");
