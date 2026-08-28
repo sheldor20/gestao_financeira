@@ -11,6 +11,7 @@ import {
 } from "../lib/finance-domain.ts";
 import { normalizeFinancialDocumentContentType } from "../lib/document-upload.ts";
 import { getAuthorizedUser } from "../lib/authorized-users.ts";
+import { financingContractKey } from "../lib/financing.ts";
 
 function movement(
   id: string,
@@ -148,4 +149,28 @@ test("vincula somente os dois e-mails às identidades corretas", () => {
   });
   assert.equal(getAuthorizedUser("pantoja.smp@gmail.com")?.person, "alexandre");
   assert.equal(getAuthorizedUser("outra-pessoa@example.com"), null);
+});
+
+test("reconhece o mesmo financiamento em PDFs atualizados", () => {
+  const first = financingContractKey({
+    institution: "Banco Exemplo S.A.",
+    contractReference: "Contrato 001.234-5",
+    description: "Financiamento apartamento",
+    owner: "joint",
+  });
+  const afterAmortization = financingContractKey({
+    institution: "BANCO EXEMPLO",
+    contractReference: "0012345",
+    description: "Crédito imobiliário - saldo atualizado",
+    owner: "joint",
+  });
+  const anotherContract = financingContractKey({
+    institution: "Banco Exemplo",
+    contractReference: "0012346",
+    description: "Financiamento apartamento",
+    owner: "joint",
+  });
+
+  assert.equal(first, afterAmortization);
+  assert.notEqual(first, anotherContract);
 });
