@@ -31,6 +31,19 @@ export type Account = {
   sourceDocumentId: string | null;
 };
 
+export type Asset = {
+  id: string;
+  owner: Owner;
+  name: string;
+  type: "real_estate" | "vehicle" | "other";
+  totalValueCents: number;
+  valuationDate: string | null;
+  valueSource: "property_value" | "purchase_price" | "financed_amount" | "document";
+  institution: string | null;
+  debtId: string | null;
+  sourceDocumentId: string | null;
+};
+
 export type CreditCard = {
   id: string;
   owner: Owner;
@@ -172,6 +185,7 @@ export type FinanceState = {
   people: Member[];
   transactions: Transaction[];
   accounts: Account[];
+  assets: Asset[];
   cards: CreditCard[];
   debts: Debt[];
   goals: Goal[];
@@ -184,6 +198,7 @@ export const emptyFinanceState: FinanceState = {
   people: [],
   transactions: [],
   accounts: [],
+  assets: [],
   cards: [],
   debts: [],
   goals: [],
@@ -477,19 +492,47 @@ export function classifyFixedExpenses(transactions: Transaction[]) {
   return result;
 }
 
-export function accountTotals(accounts: Account[], scope: Scope) {
+export function isNonAssetBalanceName(name: string) {
+  const normalized = name
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+  return (
+    (/limite/.test(normalized) && /credito|cartao/.test(normalized)) ||
+    /saldo devedor|saldo financiado|divida|fatura do cartao|compras parceladas|credito disponivel/.test(
+      normalized,
+    )
+  );
+}
+
+export function accountTotals(
+  accounts: Account[],
+  scope: Scope,
+  assets: Asset[] = [],
+) {
   const visible = accounts.filter((account) =>
     matchesScope(account.owner, scope),
   );
-  const netWorthCents = visible
+  const financialCents = visible
     .filter(
-      (account) => account.includeInNetWorth && account.type !== "insurance",
+      (account) =>
+        account.includeInNetWorth &&
+        account.type !== "insurance" &&
+        !isNonAssetBalanceName(account.name),
     )
     .reduce((sum, account) => sum + account.balanceCents, 0);
+  const assetsCents = assets
+    .filter((asset) => matchesScope(asset.owner, scope))
+    .reduce((sum, asset) => sum + asset.totalValueCents, 0);
   const insuredCents = visible
     .filter((account) => account.type === "insurance")
     .reduce((sum, account) => sum + account.balanceCents, 0);
-  return { netWorthCents, insuredCents };
+  return {
+    netWorthCents: financialCents + assetsCents,
+    financialCents,
+    assetsCents,
+    insuredCents,
+  };
 }
 
 export function debtPaidCents(debtId: string, transactions: Transaction[]) {
