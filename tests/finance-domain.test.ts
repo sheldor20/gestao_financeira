@@ -4,6 +4,7 @@ import {
   accountTotals,
   classifyFixedExpenses,
   debtPaidCents,
+  debtTotalsByOwner,
   documentTransactionCount,
   goalSavedCents,
   isNonAssetBalanceName,
@@ -212,6 +213,34 @@ test("mostra itens da fatura sem somá-los outra vez na saída mensal", () => {
 
 test("soma as parcelas abertas como total devido do financiamento", () => {
   assert.equal(openInstallmentsTotalCents(financingDebt), 516_253);
+});
+
+test("consolida o total devido e separa Kim, Ale e Grupo", () => {
+  const aleDebt: Debt = {
+    ...financingDebt,
+    id: "ale-debt",
+    owner: "alexandre",
+    debtType: "other",
+    totalCents: 300_000,
+    outstandingCents: 250_000,
+    installments: [],
+  };
+  const jointDebt: Debt = {
+    ...aleDebt,
+    id: "joint-debt",
+    owner: "joint",
+    outstandingCents: 100_000,
+  };
+
+  assert.deepEqual(
+    debtTotalsByOwner([financingDebt, aleDebt, jointDebt], []),
+    {
+      consolidatedCents: 866_253,
+      kimCents: 516_253,
+      alexandreCents: 250_000,
+      jointCents: 100_000,
+    },
+  );
 });
 
 test("leva cada parcela aberta para as saídas do mês de vencimento", () => {
