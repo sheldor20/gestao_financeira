@@ -34,10 +34,14 @@ function financingRow(
   ownerData: { owner_scope: string; owner_member_id: string | null },
   period: string,
 ) {
-  const firstInstallment = financing.installments[0] ?? null;
+  const firstInstallment =
+    financing.installments.find((item) => item.status !== "paid") ??
+    financing.installments[0] ??
+    null;
+  const lastInstallment = financing.installments.at(-1) ?? null;
   const statementDate =
     financing.statementDate ?? financing.nextDueDate ?? `${period}-01`;
-  const dueDate = financing.nextDueDate ?? firstInstallment?.dueDate;
+  const dueDate = firstInstallment?.dueDate ?? financing.nextDueDate;
   const outstandingCents = financing.outstandingAmountCents;
 
   if (outstandingCents === null) {
@@ -48,7 +52,7 @@ function financingRow(
   }
 
   const installmentCurrent =
-    financing.installmentCurrent ?? firstInstallment?.installmentNumber ?? 1;
+    firstInstallment?.installmentNumber ?? financing.installmentCurrent ?? 1;
   const highestExtractedInstallment = financing.installments.reduce(
     (highest, item) => Math.max(highest, item.installmentNumber),
     installmentCurrent,
@@ -59,7 +63,7 @@ function financingRow(
     financing.installmentTotal ?? 0,
   );
   const installmentCents =
-    financing.installmentAmountCents ?? firstInstallment?.amountCents ?? 0;
+    firstInstallment?.amountCents ?? financing.installmentAmountCents ?? 0;
   const totalCents = Math.max(
     financing.originalAmountCents ?? outstandingCents,
     outstandingCents,
@@ -67,8 +71,19 @@ function financingRow(
   const description =
     financing.description ||
     `Financiamento ${financing.institution ?? "imobiliário"}`;
-  const assetValueCents =
-    financing.assetValueCents ?? financing.originalAmountCents;
+  const fallbackIdentity = [
+    description,
+    financing.originalAmountCents ?? "sem-valor-original",
+    financing.interestRateAnnualPercent ?? "sem-taxa",
+    installmentTotal,
+    lastInstallment?.dueDate ?? "sem-vencimento-final",
+  ].join(":");
+  const hasExplicitAsset = Boolean(
+    financing.assetDescription &&
+      financing.assetValueCents &&
+      financing.assetValueCents > 0 &&
+      financing.assetValueSource,
+  );
 
   return {
     ...ownerData,
@@ -80,6 +95,7 @@ function financingRow(
       contractReference: financing.contractReference,
       description,
       owner,
+      fallbackIdentity,
     }),
     total_cents: totalCents,
     outstanding_cents: outstandingCents,
@@ -90,16 +106,15 @@ function financingRow(
     statement_date: statementDate,
     interest_rate_annual: financing.interestRateAnnualPercent,
     amortization_cents: financing.explicitAmortizationCents ?? 0,
-    asset:
-      assetValueCents && assetValueCents > 0
-        ? {
-            name: financing.assetDescription || "Apartamento financiado",
-            asset_type: "real_estate",
-            total_value_cents: assetValueCents,
-            valuation_date: statementDate,
-            value_source: financing.assetValueSource ?? "financed_amount",
-          }
-        : null,
+    asset: hasExplicitAsset
+      ? {
+          name: financing.assetDescription,
+          asset_type: "real_estate",
+          total_value_cents: financing.assetValueCents,
+          valuation_date: statementDate,
+          value_source: financing.assetValueSource,
+        }
+      : null,
     installments: financing.installments.map((item) => ({
       installment_number: item.installmentNumber,
       due_date: item.dueDate,
@@ -309,7 +324,10 @@ export async function POST(request: Request) {
       documentType,
       period,
     );
-    if (documentType === "financing_statement" && !extraction.data.financing) {
+    if (
+      documentType === "financing_statement" &&
+      extraction.data.financings.length === 0
+    ) {
       throw new Error(
         "O PDF não trouxe dados suficientes para identificar um financiamento.",
       );
@@ -333,10 +351,11 @@ export async function POST(request: Request) {
           .eq("household_id", householdId),
       ]);
 
+    const hasInvoice = Boolean(extraction.data.invoice);
     const source =
       documentType === "bank_statement"
         ? "bank_statement"
-        : documentType === "credit_card_invoice"
+        : hasInvoice
           ? "card_invoice"
           : "document_ai";
 
@@ -348,7 +367,7 @@ export async function POST(request: Request) {
       category_label: item.category,
       amount_cents: item.amountCents,
       transaction_date: item.date,
-      status: documentType === "credit_card_invoice" ? "scheduled" : "paid",
+      status: hasInvoice ? "scheduled" : "paid",
       source,
       account_id: accountId,
       credit_card_id: cardId,
@@ -387,7 +406,7 @@ export async function POST(request: Request) {
       });
 
     const invoiceRow =
-      documentType === "credit_card_invoice"
+      hasInvoice
         ? {
             ...ownerData,
             credit_card_id: cardId,
@@ -407,10 +426,9 @@ export async function POST(request: Request) {
           }
         : null;
 
-    const financing =
-      documentType === "financing_statement" && extraction.data.financing
-      ? financingRow(extraction.data.financing, owner, ownerData, period)
-      : null;
+    const financings = extraction.data.financings.map((financing) =>
+      financingRow(financing, owner, ownerData, period),
+    );
 
     const { data: application, error: applicationError } = await supabase.rpc(
       "apply_financial_document_import",
@@ -420,7 +438,7 @@ export async function POST(request: Request) {
         transaction_rows_input: transactionRows,
         balance_rows_input: balanceRows,
         invoice_input: invoiceRow,
-        financing_input: financing,
+        financing_input: financings,
         document_result_input: {
           institution: extraction.data.institution,
           period_start: extraction.data.periodStart,
@@ -431,7 +449,10 @@ export async function POST(request: Request) {
             (extraction.data.invoice?.items.length ??
               extraction.data.transactions.length) +
             extraction.data.balances.length +
-            (financing ? 1 + financing.installments.length : 0),
+            financings.reduce(
+              (sum, financing) => sum + 1 + financing.installments.length,
+              0,
+            ),
           raw_extraction: extraction.data,
         },
       },
@@ -445,9 +466,10 @@ export async function POST(request: Request) {
         updatedAccounts: Number(
           application?.updated_accounts ?? balanceRows.length,
         ),
-        financingUpdated: Boolean(application?.financing_debt_id),
+        financingUpdated: Number(application?.updated_financings ?? 0) > 0,
+        financingCount: Number(application?.updated_financings ?? 0),
         updatedInstallments: Number(application?.updated_installments ?? 0),
-        assetUpdated: Boolean(financing?.asset),
+        assetUpdated: financings.some((financing) => Boolean(financing.asset)),
         extractionMode: extraction.mode,
         invoiceItems: extraction.data.invoice?.items.length ?? null,
         invoiceTotalCents: extraction.data.invoice?.totalCents ?? null,

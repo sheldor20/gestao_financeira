@@ -187,6 +187,6 @@ export function parseInterCreditCardInvoice(
         : null,
       items,
     },
-    financing: null,
+    financings: [],
   };
 }

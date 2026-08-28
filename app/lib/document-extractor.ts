@@ -93,7 +93,7 @@ export type ExtractedFinancialDocument = {
   transactions: ExtractedTransaction[];
   balances: ExtractedBalance[];
   invoice: ExtractedInvoice | null;
-  financing: ExtractedFinancing | null;
+  financings: ExtractedFinancing[];
 };
 
 const extractionSchema = {
@@ -106,7 +106,7 @@ const extractionSchema = {
     "transactions",
     "balances",
     "invoice",
-    "financing",
+    "financings",
   ],
   properties: {
     institution: { type: ["string", "null"] },
@@ -236,10 +236,9 @@ const extractionSchema = {
         },
       ],
     },
-    financing: {
-      anyOf: [
-        { type: "null" },
-        {
+    financings: {
+      type: "array",
+      items: {
           type: "object",
           additionalProperties: false,
           required: [
@@ -316,7 +315,6 @@ const extractionSchema = {
             },
           },
         },
-      ],
     },
   },
 } as const;
@@ -333,12 +331,14 @@ Regras obrigatórias:
 - Pagamentos e créditos exibidos dentro da fatura devem ficar em invoice.items como transfer, pois não são renda. Compras e encargos ficam como expense.
 - Em extratos, extraia todas as entradas, saídas e transferências, sem transformar saldo em transação.
 - Em documentos de investimento, previdência e seguros, extraia o saldo atual em balances.
-- Em financiamento, preencha financing com o contrato, saldo devedor e somente as parcelas exibidas no documento. Não transforme o cronograma em transactions e use invoice como null.
+- O tipo informado pelo usuário é somente uma pista. Classifique pelo conteúdo real do documento.
+- Em financiamentos, empréstimos e antecipações, preencha financings com um item separado para cada contrato ou operação exibida, mesmo quando o tipo informado for "other". Não transforme o cronograma em transactions e use invoice como null.
+- Antecipação do FGTS é dívida/financiamento, nunca renda, saldo de conta ou patrimônio. "Total bloqueado FGTS" é o total da dívida; "total antecipado" é o valor original liberado.
 - A description do financiamento deve ser curta e estável entre documentos, como "Financiamento do apartamento", sem saldo, parcela ou data.
-- Em financiamento, identifique também o bem: assetDescription deve descrever o imóvel ou veículo e assetValueCents deve usar, nesta ordem, valor do imóvel/avaliação, preço de compra ou valor originalmente financiado. Informe a origem em assetValueSource. Nunca use saldo devedor como valor do bem.
+- Em financiamento que esteja explicitamente ligado a um imóvel ou veículo, identifique também o bem: assetDescription deve descrevê-lo e assetValueCents deve usar, nesta ordem, valor do imóvel/avaliação, preço de compra ou valor originalmente financiado. Informe a origem em assetValueSource. Em empréstimos sem um bem real identificado, mantenha os três campos de asset como null. Nunca use saldo devedor como valor do bem.
 - Use a referência do contrato exatamente como aparece. Se estiver mascarada, mantenha a máscara; nunca complete dígitos ausentes.
 - explicitAmortizationCents só deve ser preenchido quando o documento disser explicitamente que houve amortização, liquidação antecipada ou redução extraordinária. Uma parcela normal não é amortização extraordinária.
-- Em installments, separe principal, juros e encargos apenas quando estiverem discriminados; caso contrário use null. Não projete parcelas que não estejam no PDF.
+- Em installments, separe principal, juros e encargos apenas quando estiverem discriminados; caso contrário use null. Não projete parcelas que não estejam no PDF. Quando o documento não informar o status, considere pagas as parcelas anteriores ao período de referência informado e pendentes as posteriores.
 - Limites de crédito, limites de cartão, saldo devedor, saldo financiado, faturas e compras parceladas nunca são balances nem patrimônio.
 - Nunca invente datas, valores, contas ou transações. Se não estiver legível, omita o item.
 - Use categorias curtas em português: Moradia, Alimentação, Transporte, Saúde, Educação, Lazer, Assinaturas, Impostos, Dívidas, Investimentos, Seguros, Transferências, Renda ou Outros.
@@ -364,10 +364,7 @@ function cleanTransactions(items: ExtractedTransaction[]) {
     }));
 }
 
-function cleanExtraction(
-  value: ExtractedFinancialDocument,
-  documentType?: DocumentType,
-) {
+function cleanExtraction(value: ExtractedFinancialDocument) {
   const invoice =
     value.invoice &&
     value.invoice.totalCents > 0 &&
@@ -377,9 +374,36 @@ function cleanExtraction(
           items: cleanTransactions(value.invoice.items),
         }
       : null;
+  const financings = (value.financings ?? []).map((financing) => ({
+    ...financing,
+    contractReference:
+      financing.contractReference?.trim().slice(0, 120) || null,
+    description: financing.description.trim().slice(0, 240),
+    institution: financing.institution?.trim().slice(0, 120) || null,
+    assetDescription:
+      financing.assetDescription?.trim().slice(0, 240) || null,
+    statementDate:
+      financing.statementDate &&
+      /^\d{4}-\d{2}-\d{2}$/.test(financing.statementDate)
+        ? financing.statementDate
+        : null,
+    nextDueDate:
+      financing.nextDueDate &&
+      /^\d{4}-\d{2}-\d{2}$/.test(financing.nextDueDate)
+        ? financing.nextDueDate
+        : null,
+    installments: financing.installments
+      .filter(
+        (item) =>
+          item.installmentNumber > 0 &&
+          item.amountCents >= 0 &&
+          /^\d{4}-\d{2}-\d{2}$/.test(item.dueDate),
+      )
+      .sort((left, right) => left.dueDate.localeCompare(right.dueDate)),
+  }));
   const extractedTransactions = cleanTransactions(value.transactions);
   const transactions =
-    documentType === "credit_card_invoice" && invoice
+    invoice
       ? [
           {
             date: invoice.dueDate,
@@ -393,16 +417,16 @@ function cleanExtraction(
             confidence: 0.99,
           },
         ]
-      : extractedTransactions;
+      : financings.length
+        ? []
+        : extractedTransactions;
 
   return {
     institution: value.institution?.trim() || null,
     periodStart: value.periodStart || null,
     periodEnd: value.periodEnd || null,
     transactions,
-    balances: (["credit_card_invoice", "financing_statement"].includes(
-      documentType ?? "",
-    )
+    balances: (invoice || financings.length
       ? []
       : value.balances)
       .filter(
@@ -417,36 +441,7 @@ function cleanExtraction(
         institution: item.institution.trim().slice(0, 120),
       })),
     invoice,
-    financing: value.financing
-      ? {
-          ...value.financing,
-          contractReference:
-            value.financing.contractReference?.trim().slice(0, 120) || null,
-          description: value.financing.description.trim().slice(0, 240),
-          institution:
-            value.financing.institution?.trim().slice(0, 120) || null,
-          assetDescription:
-            value.financing.assetDescription?.trim().slice(0, 240) || null,
-          statementDate:
-            value.financing.statementDate &&
-            /^\d{4}-\d{2}-\d{2}$/.test(value.financing.statementDate)
-              ? value.financing.statementDate
-              : null,
-          nextDueDate:
-            value.financing.nextDueDate &&
-            /^\d{4}-\d{2}-\d{2}$/.test(value.financing.nextDueDate)
-              ? value.financing.nextDueDate
-              : null,
-          installments: value.financing.installments
-            .filter(
-              (item) =>
-                item.installmentNumber > 0 &&
-                item.amountCents >= 0 &&
-                /^\d{4}-\d{2}-\d{2}$/.test(item.dueDate),
-            )
-            .sort((left, right) => left.dueDate.localeCompare(right.dueDate)),
-        }
-      : null,
+    financings,
   } satisfies ExtractedFinancialDocument;
 }
 
@@ -454,6 +449,7 @@ async function extractWithAI(
   bytes: Uint8Array,
   file: { name: string; type: string },
   documentType: DocumentType,
+  period: string,
 ) {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) return null;
@@ -476,7 +472,7 @@ async function extractWithAI(
           },
           {
             type: "input_text",
-            text: `${extractionInstructions}\n\nTipo informado pelo usuário: ${documentType}.`,
+            text: `${extractionInstructions}\n\nTipo informado pelo usuário: ${documentType}.\nPeríodo de referência informado: ${period}.`,
           },
         ],
       },
@@ -495,7 +491,6 @@ async function extractWithAI(
   return {
     data: cleanExtraction(
       JSON.parse(response.output_text) as ExtractedFinancialDocument,
-      documentType,
     ),
     model,
   };
@@ -528,7 +523,7 @@ async function deterministicExtraction(
     transactions: items,
     balances: [],
     invoice: null,
-    financing: null,
+    financings: [],
   } satisfies ExtractedFinancialDocument;
 }
 
@@ -552,41 +547,22 @@ export async function extractFinancialDocument(
   documentType: DocumentType,
   period: string,
 ) {
-  if (documentType === "financing_statement") {
-    try {
-      const deterministic = parseDdcFinancingDocument(
-        await extractDocumentText(bytes, file),
-      );
-      if (deterministic) {
-        return {
-          data: cleanExtraction(deterministic, documentType),
-          model: null,
-          mode: "deterministic" as const,
-        };
-      }
-    } catch {
-      // Se não for um DDC legível, a leitura inteligente continua como fallback.
+  try {
+    const text = await extractDocumentText(bytes, file);
+    const deterministic =
+      parseDdcFinancingDocument(text) ?? parseInterCreditCardInvoice(text);
+    if (deterministic) {
+      return {
+        data: cleanExtraction(deterministic),
+        model: null,
+        mode: "deterministic" as const,
+      };
     }
+  } catch {
+    // Documentos sem texto legível seguem para a leitura visual inteligente.
   }
 
-  if (documentType === "credit_card_invoice") {
-    try {
-      const deterministic = parseInterCreditCardInvoice(
-        await extractDocumentText(bytes, file),
-      );
-      if (deterministic) {
-        return {
-          data: cleanExtraction(deterministic, documentType),
-          model: null,
-          mode: "deterministic" as const,
-        };
-      }
-    } catch {
-      // Se não for uma fatura Inter legível, a leitura inteligente continua.
-    }
-  }
-
-  const ai = await extractWithAI(bytes, file, documentType);
+  const ai = await extractWithAI(bytes, file, documentType, period);
   if (ai) return { ...ai, mode: "ai" as const };
   if (documentType !== "credit_card_invoice") {
     throw new Error(

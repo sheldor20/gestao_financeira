@@ -482,6 +482,7 @@ export function useFinanceStore() {
       imported?: number;
       updatedAccounts?: number;
       financingUpdated?: boolean;
+      financingCount?: number;
       assetUpdated?: boolean;
       updatedInstallments?: number;
       extractionMode?: string;

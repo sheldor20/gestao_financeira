@@ -125,7 +125,7 @@ export function parseDdcFinancingDocument(
     transactions: [],
     balances: [],
     invoice: null,
-    financing: {
+    financings: [{
       contractReference,
       description: "Financiamento imobiliário",
       institution: "Itaú",
@@ -156,6 +156,6 @@ export function parseDdcFinancingDocument(
           ? "financed_amount"
           : null,
       installments,
-    },
+    }],
   };
 }

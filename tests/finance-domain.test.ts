@@ -349,6 +349,25 @@ test("reconhece o mesmo financiamento em PDFs atualizados", () => {
   assert.notEqual(first, anotherContract);
 });
 
+test("não agrupa contratos sem número que tenham a mesma descrição", () => {
+  const first = financingContractKey({
+    institution: "Itaú",
+    contractReference: null,
+    description: "Antecipação FGTS",
+    owner: "alexandre",
+    fallbackIdentity: "Antecipação FGTS:795290:2023-01-01:2032-01-01",
+  });
+  const second = financingContractKey({
+    institution: "Itaú",
+    contractReference: null,
+    description: "Antecipação FGTS",
+    owner: "alexandre",
+    fallbackIdentity: "Antecipação FGTS:609020:2025-01-01:2034-01-01",
+  });
+
+  assert.notEqual(first, second);
+});
+
 test("não considera limite de crédito ou saldo devedor como patrimônio", () => {
   const accounts: Account[] = [
     {
