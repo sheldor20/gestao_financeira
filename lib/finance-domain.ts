@@ -218,6 +218,14 @@ export function documentTransactionCount(
   ).length;
 }
 
+export function canManageTransactionRecurrence(transaction: Transaction) {
+  return (
+    transaction.countsInCashflow &&
+    transaction.source !== "debt_installment" &&
+    (transaction.kind === "income" || transaction.kind === "expense")
+  );
+}
+
 export function openInstallmentsTotalCents(debt: Debt) {
   return debt.installments
     .filter((installment) => installment.status !== "paid")

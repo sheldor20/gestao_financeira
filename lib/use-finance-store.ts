@@ -551,6 +551,21 @@ export function useFinanceStore() {
     await refresh();
   }
 
+  async function setTransactionRecurrence(
+    transactionId: string,
+    isRecurring: boolean,
+  ) {
+    const { error: recurrenceError } = await supabase.rpc(
+      "set_transaction_recurrence",
+      {
+        transaction_id_input: transactionId,
+        is_recurring_input: isRecurring,
+      },
+    );
+    if (recurrenceError) throw recurrenceError;
+    await refresh();
+  }
+
   async function importDocument(form: FormData) {
     const response = await fetch("/api/documents/import", {
       method: "POST",
@@ -614,6 +629,7 @@ export function useFinanceStore() {
       linkTransaction(transactionId, "debt_id", debtId),
     linkGoal: (transactionId: string, goalId: string | null) =>
       linkTransaction(transactionId, "goal_id", goalId),
+    setTransactionRecurrence,
     importDocument,
     deleteDocument,
     createInvite,
