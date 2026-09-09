@@ -1,8 +1,8 @@
 import OpenAI from "openai";
-import { extractText, getDocumentProxy } from "unpdf";
 import { parseDdcFinancingDocument } from "./financing-ddc-parser";
 import { parseInterCreditCardInvoice } from "./inter-credit-card-parser";
 import { parseInvoiceText } from "./invoice-parser";
+import { extractPdfText } from "./pdf-text";
 import {
   isNonAssetBalanceName,
   normalizeMerchant,
@@ -535,8 +535,7 @@ async function extractDocumentText(
     file.type === "application/pdf" ||
     file.name.toLowerCase().endsWith(".pdf")
   ) {
-    const pdf = await getDocumentProxy(bytes);
-    return (await extractText(pdf, { mergePages: true })).text;
+    return extractPdfText(bytes);
   }
   return new TextDecoder("utf-8").decode(bytes);
 }

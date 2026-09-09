@@ -201,6 +201,12 @@ export async function POST(request: Request) {
     if (!(file instanceof File)) {
       return Response.json({ error: "Selecione um documento." }, { status: 400 });
     }
+    if (file.size === 0) {
+      return Response.json(
+        { error: "O documento está vazio. Selecione o PDF novamente." },
+        { status: 400 },
+      );
+    }
     if (!(["kim", "alexandre", "joint"] as string[]).includes(owner)) {
       return Response.json({ error: "Responsável inválido." }, { status: 400 });
     }
