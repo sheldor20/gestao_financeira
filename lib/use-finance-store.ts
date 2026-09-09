@@ -431,6 +431,56 @@ export function useFinanceStore() {
     await refresh();
   }
 
+  async function addTransaction(
+    input: Pick<
+      Transaction,
+      | "owner"
+      | "kind"
+      | "description"
+      | "category"
+      | "amountCents"
+      | "transactionDate"
+      | "status"
+      | "accountId"
+      | "cardId"
+      | "note"
+    >,
+  ) {
+    if (input.kind !== "income" && input.kind !== "expense") {
+      throw new Error("Escolha uma entrada ou uma saída.");
+    }
+    if (!input.description.trim()) {
+      throw new Error("Informe uma descrição para o lançamento.");
+    }
+    if (input.amountCents <= 0) {
+      throw new Error("Informe um valor maior que zero.");
+    }
+
+    const { error: insertError } = await supabase.from("transactions").insert({
+      household_id: state.householdId,
+      ...ownerColumnsForSelection(
+        input.owner,
+        state.people.map((member) => ({
+          personKey: member.id,
+          memberId: member.memberId,
+        })),
+      ),
+      kind: input.kind,
+      description: input.description.trim(),
+      category_label: input.category.trim() || "Outros",
+      amount_cents: input.amountCents,
+      transaction_date: input.transactionDate,
+      status: input.status,
+      source: "manual",
+      account_id: input.accountId,
+      credit_card_id: input.cardId,
+      note: input.note?.trim() || null,
+      merchant_key: normalizeMerchant(input.description),
+    });
+    if (insertError) throw insertError;
+    await refresh();
+  }
+
   async function addDebt(
     input: Pick<
       Debt,
@@ -557,6 +607,7 @@ export function useFinanceStore() {
     error,
     refresh,
     addAsset,
+    addTransaction,
     addDebt,
     addGoal,
     linkDebt: (transactionId: string, debtId: string | null) =>

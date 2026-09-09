@@ -61,7 +61,18 @@ import { ownerSelectionOptions } from "@/lib/owner-selection";
 import { useFinanceStore } from "@/lib/use-finance-store";
 
 type Tab = "overview" | "transactions" | "debts" | "assets" | "planning";
-type Modal = "import" | "asset" | "debt" | "goal" | "invite" | null;
+type ManualTransactionModal = {
+  type: "transaction";
+  kind: "income" | "expense";
+};
+type Modal =
+  | "import"
+  | "asset"
+  | "debt"
+  | "goal"
+  | "invite"
+  | ManualTransactionModal
+  | null;
 
 const brl = new Intl.NumberFormat("pt-BR", {
   style: "currency",
@@ -80,12 +91,12 @@ const pageCopy: Record<Tab, { eyebrow: string; title: string; subtitle: string }
   overview: {
     eyebrow: "CONSOLIDADO",
     title: "Visão financeira do casal",
-    subtitle: "Entradas, saídas e planejamento calculados pelos documentos importados.",
+    subtitle: "Entradas, saídas e planejamento reunidos dos lançamentos manuais e documentos importados.",
   },
   transactions: {
     eyebrow: "MOVIMENTAÇÕES",
     title: "Entradas e saídas",
-    subtitle: "Extratos, faturas e parcelas previstas para cada mês.",
+    subtitle: "Lançamentos manuais, extratos, faturas e parcelas previstas para cada mês.",
   },
   debts: {
     eyebrow: "GESTÃO",
@@ -190,12 +201,23 @@ function monthLabel(month: string) {
 }
 
 function sourceLabel(source: Transaction["source"]) {
+  if (source === "manual") return "Manual";
   if (source === "bank_statement") return "Extrato";
   if (source === "card_invoice" || source === "invoice") return "Fatura";
   if (source === "invoice_detail") return "Detalhe da fatura";
   if (source === "debt_installment") return "Parcela";
   if (source === "document_ai") return "Documento";
   return "Importado";
+}
+
+function dateForMonth(month: string) {
+  const today = new Date();
+  const localDate = new Date(
+    today.getTime() - today.getTimezoneOffset() * 60_000,
+  )
+    .toISOString()
+    .slice(0, 10);
+  return localDate.startsWith(month) ? localDate : `${month}-01`;
 }
 
 export function FinanceApp({ userEmail }: { userEmail: string }) {
@@ -281,6 +303,37 @@ export function FinanceApp({ userEmail }: { userEmail: string }) {
   ) {
     setDefaultDocumentType(documentType);
     setModal("import");
+  }
+
+  function openManualTransaction(kind: "income" | "expense") {
+    setModal({ type: "transaction", kind });
+  }
+
+  async function addTransaction(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setBusy(true);
+    const data = new FormData(event.currentTarget);
+    const kind = String(data.get("kind")) as "income" | "expense";
+    try {
+      await store.addTransaction({
+        owner: String(data.get("owner")) as Owner,
+        kind,
+        description: String(data.get("description")),
+        category: String(data.get("category")),
+        amountCents: cents(data.get("amount")),
+        transactionDate: String(data.get("transactionDate")),
+        status: String(data.get("status")) as Transaction["status"],
+        accountId: String(data.get("accountId")) || null,
+        cardId: String(data.get("cardId")) || null,
+        note: String(data.get("note")) || null,
+      });
+      setModal(null);
+      notify(kind === "income" ? "Entrada adicionada com sucesso." : "Saída adicionada com sucesso.");
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "Falha ao salvar o lançamento.");
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function importDocument(event: FormEvent<HTMLFormElement>) {
@@ -459,7 +512,7 @@ export function FinanceApp({ userEmail }: { userEmail: string }) {
         </nav>
         <div className="sidebar-source-note">
           <Sparkles size={18} />
-          <div><strong>Fonte dos dados</strong><span>Extratos e faturas importados</span></div>
+          <div><strong>Fonte dos dados</strong><span>Lançamentos manuais e documentos</span></div>
         </div>
       </aside>
 
@@ -472,6 +525,14 @@ export function FinanceApp({ userEmail }: { userEmail: string }) {
                 <UserPlus size={17} /> Convidar
               </button>
             )}
+            <div className="manual-entry-actions" aria-label="Adicionar lançamento manual">
+              <button className="manual-entry-button income" type="button" onClick={() => openManualTransaction("income")}>
+                <ArrowDownLeft size={17} /> <span>Entrada manual</span>
+              </button>
+              <button className="manual-entry-button expense" type="button" onClick={() => openManualTransaction("expense")}>
+                <ArrowUpRight size={17} /> <span>Saída manual</span>
+              </button>
+            </div>
             <button className="primary-button" onClick={() => openImport()}>
               <FileUp size={17} /> Importar PDF
             </button>
@@ -522,7 +583,7 @@ export function FinanceApp({ userEmail }: { userEmail: string }) {
                     <div><span className="mini-avatar kim">K</span><div><small>Kim</small><strong>{money(incomes.kimCents)}</strong></div></div>
                     <div><span className="mini-avatar alex">A</span><div><small>Alexandre</small><strong>{money(incomes.alexandreCents)}</strong></div></div>
                   </div>
-                  <p className="subtle-copy">Não existe salário cadastrado. Estes valores são a soma das entradas importadas no mês.</p>
+                  <p className="subtle-copy">Estes valores somam as entradas manuais e importadas no mês.</p>
                 </section>
                 <section className="panel">
                   <div className="panel-heading"><div><span className="eyebrow">DESPESAS FIXAS</span><h2>Confirmadas por recorrência</h2></div><span className="count-pill">{fixedExpenses.length}</span></div>
@@ -537,7 +598,7 @@ export function FinanceApp({ userEmail }: { userEmail: string }) {
                   <div className="panel-heading"><div><span className="eyebrow">CATEGORIAS</span><h2>Maiores saídas</h2></div></div>
                   {categories.length ? categories.map(([category, value]) => (
                     <div className="category-line" key={category}><span>{category}</span><div><i style={{ width: `${Math.max(8, (value / (categories[0]?.[1] || 1)) * 100)}%` }} /></div><strong>{money(value)}</strong></div>
-                  )) : <EmptyState compact text="Importe um extrato ou uma fatura para ver as categorias." />}
+                  )) : <EmptyState compact text="Adicione uma saída manual ou importe um documento para ver as categorias." />}
                 </section>
                 <section className="panel">
                   <div className="panel-heading"><div><span className="eyebrow">ARQUIVOS</span><h2>Documentos importados</h2></div></div>
@@ -590,7 +651,7 @@ export function FinanceApp({ userEmail }: { userEmail: string }) {
                     </tbody>
                   </table>
                 </div>
-              ) : <EmptyState icon={FileUp} text="Importe extratos, faturas ou um financiamento. As movimentações do mês aparecerão aqui automaticamente." action="Importar documento" onAction={() => openImport()} />}
+              ) : <EmptyState icon={Plus} text="Adicione uma entrada ou saída manual, ou importe um documento. As movimentações do mês aparecerão aqui." action="Adicionar saída manual" onAction={() => openManualTransaction("expense")} />}
             </section>
           )}
 
@@ -652,6 +713,8 @@ export function FinanceApp({ userEmail }: { userEmail: string }) {
 
       {modal === "import" && <ModalShell title="Importar documento" subtitle="Kim ou Ale podem importar qualquer documento: escolha abaixo a quem ele pertence." onClose={() => setModal(null)}><form ref={importFormRef} className="modal-form" onSubmit={importDocument}><label><span>Arquivo</span><input type="file" name="file" accept=".pdf,.csv,.txt,application/pdf,text/csv,text/plain" required /></label><div className="form-grid"><OwnerSelect label="De quem é o documento?" requireChoice /><label><span>Tipo</span><select key={defaultDocumentType} name="documentType" defaultValue={defaultDocumentType}>{Object.entries(documentLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label><label><span>Período de referência</span><input name="period" type="month" defaultValue={month} required /></label><label><span>Conta relacionada (opcional)</span><select name="accountId" defaultValue=""><option value="">Identificar pelo PDF</option>{state.accounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}</select></label><label><span>Cartão relacionado (opcional)</span><select name="cardId" defaultValue=""><option value="">Identificar pelo PDF</option>{state.cards.map((card) => <option key={card.id} value={card.id}>{card.name}</option>)}</select></label></div><div className="ai-disclosure"><Sparkles size={18} /><span>A pessoa conectada não altera a titularidade escolhida. Kim, Grupo e Ale podem receber extratos, faturas, financiamentos e demais documentos importados.</span></div><button className="primary-button modal-submit" disabled={busy}>{busy ? "Lendo e aplicando…" : "Ler e aplicar tudo"}</button></form></ModalShell>}
 
+      {modal && typeof modal === "object" && modal.type === "transaction" && <ModalShell title={modal.kind === "income" ? "Nova entrada manual" : "Nova saída manual"} subtitle="Preencha os dados do lançamento. Ele aparecerá imediatamente no mês e na visão selecionados." onClose={() => setModal(null)}><form className="modal-form" onSubmit={addTransaction}><div className="form-grid"><label><span>Tipo</span><select name="kind" defaultValue={modal.kind} required><option value="income">Entrada</option><option value="expense">Saída</option></select></label><OwnerSelect label="De quem é o lançamento?" defaultOwner={scope === "all" ? "joint" : scope} /><label><span>Descrição</span><input name="description" required maxLength={240} placeholder={modal.kind === "income" ? "Ex.: Salário ou reembolso" : "Ex.: Mercado ou aluguel"} /></label><label><span>Valor</span><input name="amount" required placeholder="0,00" inputMode="decimal" /></label><label><span>Data</span><input name="transactionDate" type="date" defaultValue={dateForMonth(month)} required /></label><label><span>Categoria</span><input name="category" defaultValue="Outros" required placeholder="Ex.: Moradia, Alimentação ou Renda" /></label><label><span>Status</span><select name="status" defaultValue="paid" required><option value="paid">Pago/recebido</option><option value="pending">Pendente</option><option value="scheduled">Agendado</option></select></label><label><span>Conta relacionada (opcional)</span><select name="accountId" defaultValue=""><option value="">Sem conta vinculada</option>{state.accounts.map((account) => <option key={account.id} value={account.id}>{account.name} · {account.institution}</option>)}</select></label><label><span>Cartão relacionado (opcional)</span><select name="cardId" defaultValue=""><option value="">Sem cartão vinculado</option>{state.cards.map((card) => <option key={card.id} value={card.id}>{card.name}</option>)}</select></label><label><span>Observação (opcional)</span><input name="note" maxLength={500} placeholder="Inclua um detalhe, se necessário" /></label></div><button className={`primary-button modal-submit manual-${modal.kind}`} disabled={busy}>{busy ? "Salvando…" : modal.kind === "income" ? "Salvar entrada" : "Salvar saída"}</button></form></ModalShell>}
+
       {pendingDocumentDelete && <ModalShell title="Excluir documento e lançamentos?" subtitle="A exclusão remove o arquivo e tudo que foi criado a partir dele." onClose={() => !deletingDocumentId && setPendingDocumentDelete(null)}><div className="delete-document-confirmation"><div className="delete-document-file"><span><FileText size={21} /></span><div><strong>{pendingDocumentDelete.filename}</strong><small>{documentLabels[pendingDocumentDelete.documentType]}</small></div></div><div className="delete-document-warning"><Trash2 size={18} /><p>Serão removidos permanentemente <strong>{documentTransactionCount(pendingDocumentDelete.id, transactions)} lançamentos e parcelas vinculados</strong>, além de faturas originadas deste PDF. Essa ação não pode ser desfeita.</p></div><footer><button className="secondary-button" type="button" disabled={Boolean(deletingDocumentId)} onClick={() => setPendingDocumentDelete(null)}>Cancelar</button><button className="delete-confirm-button" type="button" disabled={Boolean(deletingDocumentId)} onClick={() => void deleteDocument()}>{deletingDocumentId ? <RefreshCw className="spin" size={16} /> : <Trash2 size={16} />}{deletingDocumentId ? "Excluindo…" : "Excluir tudo"}</button></footer></div></ModalShell>}
 
       {modal === "asset" && <ModalShell title="Adicionar patrimônio" subtitle="Cadastre um imóvel, veículo ou outro bem e escolha a quem ele pertence." onClose={() => setModal(null)}><form className="modal-form" onSubmit={addAsset}><label><span>Nome do patrimônio</span><input name="name" required placeholder="Ex.: Apartamento, carro ou terreno" /></label><div className="form-grid"><OwnerSelect label="De quem é o patrimônio?" requireChoice /><label><span>Tipo de bem</span><select name="type" defaultValue="real_estate" required>{Object.entries(assetTypeLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label><label><span>Valor atual</span><input name="value" required placeholder="0,00" inputMode="decimal" /></label><label><span>Data da avaliação</span><input name="valuationDate" type="date" defaultValue={new Date().toISOString().slice(0, 10)} required /></label><label><span>Instituição ou referência (opcional)</span><input name="institution" placeholder="Ex.: Itaú, matrícula ou localização" /></label></div><button className="primary-button modal-submit" disabled={busy}>{busy ? "Salvando…" : "Salvar patrimônio"}</button></form></ModalShell>}
@@ -676,8 +739,8 @@ function EmptyState({ icon: Icon = FileText, text, compact = false, action, onAc
   return <div className={`empty-state ${compact ? "compact" : ""}`}><Icon size={compact ? 22 : 32} /><p>{text}</p>{action && <button className="secondary-button" onClick={onAction}>{action}</button>}</div>;
 }
 
-function OwnerSelect({ label = "Responsável", requireChoice = false }: { label?: string; requireChoice?: boolean }) {
-  return <label><span>{label}</span><select name="owner" defaultValue={requireChoice ? "" : "joint"} required>{requireChoice && <option value="" disabled>Selecione Kim, Grupo ou Ale</option>}{ownerSelectionOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>;
+function OwnerSelect({ label = "Responsável", requireChoice = false, defaultOwner = "joint" }: { label?: string; requireChoice?: boolean; defaultOwner?: Owner }) {
+  return <label><span>{label}</span><select name="owner" defaultValue={requireChoice ? "" : defaultOwner} required>{requireChoice && <option value="" disabled>Selecione Kim, Grupo ou Ale</option>}{ownerSelectionOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>;
 }
 
 function ModalShell({ title, subtitle, onClose, children }: { title: string; subtitle: string; onClose: () => void; children: ReactNode }) {
