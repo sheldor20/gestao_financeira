@@ -25,6 +25,10 @@ pessoas.
 6. Insere movimentações e atualiza saldos no Postgres.
 7. Recalcula a recorrência no banco, exigindo três meses consecutivos.
 
+Uma confirmação manual cria ou atualiza uma regra em `recurrences`, vinculada à
+pessoa, ao tipo e ao estabelecimento normalizado. A classificação é reaplicada
+às movimentações equivalentes sem criar lançamentos artificiais no fluxo de caixa.
+
 Sem `OPENAI_API_KEY`, somente faturas de cartão podem usar a leitura
 determinística existente; os outros documentos falham com uma mensagem clara
 para evitar interpretar créditos e débitos de forma errada.
