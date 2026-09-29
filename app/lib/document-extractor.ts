@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+import { cachedJson, recordUsage } from "../../lib/ai-efficiency.cjs";
 import OpenAI from "openai";
 import { parseDdcFinancingDocument } from "./financing-ddc-parser";
 import { parseInterCreditCardInvoice } from "./inter-credit-card-parser";
@@ -450,6 +452,7 @@ async function extractWithAI(
   file: { name: string; type: string },
   documentType: DocumentType,
   period: string,
+  cacheScope?: { userId: string; householdId: string },
 ) {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) return null;
@@ -457,6 +460,7 @@ async function extractWithAI(
   const model = process.env.OPENAI_DOCUMENT_MODEL ?? "gpt-5.4-nano";
   const client = new OpenAI({ apiKey });
   const fileData = `data:${file.type || "application/pdf"};base64,${Buffer.from(bytes).toString("base64")}`;
+  const produce = async () => {
   const response = await client.responses.create({
     model,
     store: false,
@@ -487,13 +491,24 @@ async function extractWithAI(
     },
   });
 
-  if (!response.output_text) throw new Error("A IA não retornou dados estruturados.");
+  if (response.status !== "completed" || !response.output_text) throw new Error("A IA não retornou dados estruturados.");
   return {
     data: cleanExtraction(
       JSON.parse(response.output_text) as ExtractedFinancialDocument,
     ),
     model,
+    providerResponse: { id: response.id, model: response.model, usage: response.usage },
   };
+  };
+  const result = cacheScope ? await cachedJson({
+    scope: cacheScope.userId + ":" + cacheScope.householdId,
+    ownerId: cacheScope.userId, purpose: "financial-document-v1",
+    input: { model, documentType, period, mime: file.type, instructions: extractionInstructions, schema: extractionSchema, hash: createHash("sha256").update(bytes).digest("hex") },
+    validate: value => Boolean(value && typeof value === "object" && "data" in value && "providerResponse" in value),
+  }, produce) : { value: await produce(), cacheHit: false };
+  await recordUsage({ system: "dois", operation: "document-import", ownerId: cacheScope?.userId, response: result.value.providerResponse, cacheHit: result.cacheHit });
+  return { data: result.value.data, model: result.value.model };
+
 }
 
 async function deterministicExtraction(
@@ -545,6 +560,7 @@ export async function extractFinancialDocument(
   file: { name: string; type: string },
   documentType: DocumentType,
   period: string,
+  cacheScope?: { userId: string; householdId: string },
 ) {
   try {
     const text = await extractDocumentText(bytes, file);
@@ -561,7 +577,7 @@ export async function extractFinancialDocument(
     // Documentos sem texto legível seguem para a leitura visual inteligente.
   }
 
-  const ai = await extractWithAI(bytes, file, documentType, period);
+  const ai = await extractWithAI(bytes, file, documentType, period, cacheScope);
   if (ai) return { ...ai, mode: "ai" as const };
   if (documentType !== "credit_card_invoice") {
     throw new Error(

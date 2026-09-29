@@ -329,6 +329,7 @@ export async function POST(request: Request) {
       { name: file.name, type: contentType },
       documentType,
       period,
+      { userId: user.id, householdId },
     );
     if (
       documentType === "financing_statement" &&
