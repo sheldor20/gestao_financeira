@@ -20,6 +20,7 @@
 - Tabela única com pessoa, data, descrição, origem, categoria e valor.
 - Origem documental: extrato bancário ou fatura de cartão.
 - Busca e filtros por mês e pessoa.
+- Marcação ou remoção manual de recorrência em entradas e saídas reais.
 - Vinculação de uma saída ao pagamento de uma dívida.
 - Vinculação de uma transferência ao aporte de uma meta.
 
@@ -56,3 +57,7 @@
 Uma despesa é agrupada por pessoa e estabelecimento normalizado. Ela permanece
 não fixa no primeiro e no segundo mês. Ao existir no terceiro mês consecutivo,
 o grupo passa a ser classificado como fixo. Uma interrupção reinicia a contagem.
+
+O usuário também pode marcar uma entrada ou saída como recorrente sem aguardar
+os três meses. Essa decisão vale para as movimentações equivalentes da mesma
+pessoa e estabelecimento, inclusive futuras importações, e pode ser revertida.

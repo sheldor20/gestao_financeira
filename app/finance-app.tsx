@@ -21,6 +21,7 @@ import {
   Package,
   Plus,
   RefreshCw,
+  Repeat2,
   Search,
   ShieldCheck,
   Sparkles,
@@ -38,6 +39,7 @@ import { FormEvent, useMemo, useRef, useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import {
   accountTotals,
+  canManageTransactionRecurrence,
   debtPaidCents,
   debtOutstandingCents,
   debtTotalsByOwner,
@@ -234,6 +236,7 @@ export function FinanceApp({ userEmail }: { userEmail: string }) {
   const [busy, setBusy] = useState(false);
   const [inviteCode, setInviteCode] = useState("");
   const [deletingDocumentId, setDeletingDocumentId] = useState("");
+  const [updatingRecurrenceId, setUpdatingRecurrenceId] = useState("");
   const [pendingDocumentDelete, setPendingDocumentDelete] =
     useState<FinancialDocument | null>(null);
   const [defaultDocumentType, setDefaultDocumentType] = useState<
@@ -333,6 +336,27 @@ export function FinanceApp({ userEmail }: { userEmail: string }) {
       notify(error instanceof Error ? error.message : "Falha ao salvar o lançamento.");
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function toggleTransactionRecurrence(transaction: Transaction) {
+    const isRecurring = !transaction.isFixedRecurring;
+    setUpdatingRecurrenceId(transaction.id);
+    try {
+      await store.setTransactionRecurrence(transaction.id, isRecurring);
+      notify(
+        isRecurring
+          ? `“${transaction.description}” foi marcada como recorrente.`
+          : `Recorrência removida de “${transaction.description}”.`,
+      );
+    } catch (error) {
+      notify(
+        error instanceof Error
+          ? error.message
+          : "Não foi possível atualizar a recorrência.",
+      );
+    } finally {
+      setUpdatingRecurrenceId("");
     }
   }
 
@@ -586,10 +610,10 @@ export function FinanceApp({ userEmail }: { userEmail: string }) {
                   <p className="subtle-copy">Estes valores somam as entradas manuais e importadas no mês.</p>
                 </section>
                 <section className="panel">
-                  <div className="panel-heading"><div><span className="eyebrow">DESPESAS FIXAS</span><h2>Confirmadas por recorrência</h2></div><span className="count-pill">{fixedExpenses.length}</span></div>
+                  <div className="panel-heading"><div><span className="eyebrow">DESPESAS RECORRENTES</span><h2>Fixas e confirmadas</h2></div><span className="count-pill">{fixedExpenses.length}</span></div>
                   {fixedExpenses.length ? fixedExpenses.slice(0, 4).map((item) => (
-                    <div className="compact-row" key={item.id}><div><strong>{item.description}</strong><span>{item.recurrenceStreak} meses consecutivos</span></div><b>{money(item.amountCents)}</b></div>
-                  )) : <EmptyState compact text="Uma despesa só será marcada como fixa após aparecer em três meses consecutivos." />}
+                    <div className="compact-row" key={item.id}><div><strong>{item.description}</strong><span>{item.recurrenceStreak >= 3 ? `${item.recurrenceStreak} meses consecutivos` : "Marcada por você"}</span></div><b>{money(item.amountCents)}</b></div>
+                  )) : <EmptyState compact text="Marque uma saída como recorrente ou aguarde a identificação automática após três meses consecutivos." />}
                 </section>
               </div>
 
@@ -619,12 +643,12 @@ export function FinanceApp({ userEmail }: { userEmail: string }) {
               {visibleTransactions.length ? (
                 <div className="table-wrap">
                   <table className="finance-table">
-                    <thead><tr><th>Data</th><th>Descrição</th><th>Pessoa</th><th>Origem</th><th>Categoria</th><th>Vínculo</th><th>Valor</th></tr></thead>
+                    <thead><tr><th>Data</th><th>Descrição</th><th>Pessoa</th><th>Origem</th><th>Categoria</th><th>Vínculo</th><th>Recorrência</th><th>Valor</th></tr></thead>
                     <tbody>
                       {visibleTransactions.map((item) => (
                         <tr key={item.id}>
                           <td>{dateLabel(item.transactionDate)}</td>
-                          <td><div className="transaction-name"><i className={item.kind}><span>{item.kind === "income" ? "↓" : item.kind === "expense" ? "↑" : "↔"}</span></i><div><strong>{item.description}</strong>{!item.countsInCashflow && <span className="detail-label">Informativo · já incluído no total</span>}{item.isFixedRecurring && <span className="fixed-label">Fixo · {item.recurrenceStreak} meses</span>}</div></div></td>
+                          <td><div className="transaction-name"><i className={item.kind}><span>{item.kind === "income" ? "↓" : item.kind === "expense" ? "↑" : "↔"}</span></i><div><strong>{item.description}</strong>{!item.countsInCashflow && <span className="detail-label">Informativo · já incluído no total</span>}{item.isFixedRecurring && <span className="fixed-label">Recorrente{item.recurrenceStreak >= 3 ? ` · ${item.recurrenceStreak} meses` : ""}</span>}</div></div></td>
                           <td>{ownerBadge(item.owner)}</td>
                           <td><span className="source-badge">{sourceLabel(item.source)}</span></td>
                           <td>{item.category}</td>
@@ -643,6 +667,21 @@ export function FinanceApp({ userEmail }: { userEmail: string }) {
                                 try { await store.linkGoal(item.id, event.target.value || null); notify("Aporte vinculado à meta."); }
                                 catch (error) { notify(error instanceof Error ? error.message : "Falha no vínculo."); }
                               }}><option value="">Sem meta</option>{state.goals.map((goal) => <option key={goal.id} value={goal.id}>{goal.name}</option>)}</select>
+                            ) : <span className="muted">—</span>}
+                          </td>
+                          <td>
+                            {canManageTransactionRecurrence(item) ? (
+                              <button
+                                className={`recurrence-toggle ${item.isFixedRecurring ? "active" : ""}`}
+                                type="button"
+                                aria-pressed={item.isFixedRecurring}
+                                aria-label={`${item.isFixedRecurring ? "Remover recorrência de" : "Marcar como recorrente"} ${item.description}`}
+                                disabled={Boolean(updatingRecurrenceId)}
+                                onClick={() => void toggleTransactionRecurrence(item)}
+                              >
+                                {updatingRecurrenceId === item.id ? <RefreshCw className="spin" size={14} /> : <Repeat2 size={14} />}
+                                <span>{item.isFixedRecurring ? "Recorrente" : "Marcar"}</span>
+                              </button>
                             ) : <span className="muted">—</span>}
                           </td>
                           <td className={`money-cell ${item.kind}`}>{item.kind === "expense" ? "−" : item.kind === "income" ? "+" : ""}{money(item.amountCents)}</td>

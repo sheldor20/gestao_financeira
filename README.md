@@ -17,8 +17,9 @@ documentos.
    patrimônio e planejamento.
 
 A renda mensal não é cadastrada: ela é a soma das entradas de cada pessoa no
-mês. Uma saída só recebe a marcação de fixa depois de aparecer por três meses
-consecutivos para a mesma pessoa e estabelecimento.
+mês. Uma saída recebe a marcação de recorrente depois de aparecer por três meses
+consecutivos para a mesma pessoa e estabelecimento, ou imediatamente quando uma
+das pessoas confirmar a recorrência na tabela de movimentações.
 
 ## Segurança
 

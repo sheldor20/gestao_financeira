@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   accountTotals,
+  canManageTransactionRecurrence,
   classifyFixedExpenses,
   debtPaidCents,
   debtTotalsByOwner,
@@ -298,6 +299,55 @@ test("só classifica uma saída como fixa após três meses consecutivos", () =>
     movement("apr", "kim", "expense", 10_000, "2026-04-10", "Netflix"),
   ]);
   assert.equal(brokenSequence.get("apr")?.isFixedRecurring, false);
+});
+
+test("permite gerenciar recorrência apenas em entradas e saídas reais", () => {
+  const income = movement(
+    "salary",
+    "kim",
+    "income",
+    100_000,
+    "2026-09-05",
+    "Salário",
+  );
+  const expense = movement(
+    "rent",
+    "joint",
+    "expense",
+    50_000,
+    "2026-09-10",
+    "Aluguel",
+  );
+  const transfer = movement(
+    "saving",
+    "kim",
+    "transfer",
+    20_000,
+    "2026-09-12",
+    "Reserva",
+  );
+
+  assert.equal(canManageTransactionRecurrence(income), true);
+  assert.equal(canManageTransactionRecurrence(expense), true);
+  assert.equal(canManageTransactionRecurrence(transfer), false);
+  assert.equal(
+    canManageTransactionRecurrence({
+      ...expense,
+      id: "invoice-detail",
+      source: "invoice_detail",
+      countsInCashflow: false,
+    }),
+    false,
+  );
+  assert.equal(
+    canManageTransactionRecurrence({
+      ...expense,
+      id: "scheduled-installment",
+      source: "debt_installment",
+      status: "scheduled",
+    }),
+    false,
+  );
 });
 
 test("pagamentos vinculados reduzem dívidas e acumulam metas", () => {
