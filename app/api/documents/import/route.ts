@@ -176,16 +176,15 @@ function findGoal(
 }
 
 export async function POST(request: Request) {
-  const supabase = await createSupabaseServerClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) {
-    return Response.json({ error: "Sessão expirada." }, { status: 401 });
-  }
-
+  let supabase: Awaited<ReturnType<typeof createSupabaseServerClient>> | undefined;
   let documentId = "";
   try {
+    supabase = await createSupabaseServerClient();
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return Response.json({ error: "Sessão expirada. Entre novamente." }, { status: 401 });
+    }
+
     const form = await request.formData();
     const file = form.get("file");
     const owner = String(form.get("owner") ?? "joint") as Owner;
@@ -484,15 +483,24 @@ export async function POST(request: Request) {
       { status: 201 },
     );
   } catch (error) {
-    if (documentId) {
-      await supabase
-        .from("financial_documents")
-        .update({
-          status: "failed",
-          error_message:
-            error instanceof Error ? error.message.slice(0, 500) : "Falha na importação.",
-        })
-        .eq("id", documentId);
+    console.error("document_import_failed", {
+      documentId: documentId || null,
+      errorType: error instanceof Error ? error.name : "ImportError",
+    });
+    if (documentId && supabase) {
+      try {
+        await supabase
+          .from("financial_documents")
+          .update({
+            status: "failed",
+            error_message:
+              error instanceof Error ? error.message.slice(0, 500) : "Falha na importação.",
+          })
+          .eq("id", documentId);
+      } catch {
+        // A second outage must not replace the original JSON error with HTML.
+        console.error("document_import_failure_status_unavailable", { documentId });
+      }
     }
     return Response.json(
       {
