@@ -19,6 +19,7 @@ import {
   type TransactionSource,
 } from "./finance-domain";
 import { ownerColumnsForSelection } from "./owner-selection";
+import { readApiResponse } from "./api-response";
 import { createSupabaseBrowserClient } from "./supabase/client";
 
 type Row = Record<string, unknown>;
@@ -556,7 +557,7 @@ export function useFinanceStore() {
       method: "POST",
       body: form,
     });
-    const payload = (await response.json()) as {
+    const payload = await readApiResponse<{
       error?: string;
       imported?: number;
       updatedAccounts?: number;
@@ -567,8 +568,7 @@ export function useFinanceStore() {
       extractionMode?: string;
       invoiceItems?: number | null;
       invoiceTotalCents?: number | null;
-    };
-    if (!response.ok) throw new Error(payload.error ?? "Falha na importação.");
+    }>(response, "Falha na importação.");
     await refresh();
     return payload;
   }
@@ -578,16 +578,13 @@ export function useFinanceStore() {
       `/api/documents/${encodeURIComponent(documentId)}`,
       { method: "DELETE" },
     );
-    const payload = (await response.json()) as {
+    const payload = await readApiResponse<{
       error?: string;
       deletedTransactions?: number;
       deletedInvoices?: number;
       deletedInstallments?: number;
       deletedDebts?: number;
-    };
-    if (!response.ok) {
-      throw new Error(payload.error ?? "Falha ao excluir o documento.");
-    }
+    }>(response, "Falha ao excluir o documento.");
     await refresh();
     return payload;
   }
